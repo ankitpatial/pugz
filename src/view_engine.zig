@@ -11,30 +11,32 @@
 //!
 //! Example:
 //! ```zig
-//! var engine = try ViewEngine.init(allocator, .{
+//! const engine = ViewEngine.init(.{
 //!     .views_dir = "src/views",
 //! });
-//! defer engine.deinit();
 //!
-//! const html = try engine.render(arena.allocator(), "pages/home", .{
-//!     .title = "Home",
-//! });
+//! // Render from file
+//! const html = try engine.render(allocator, "pages/home", .{ .title = "Home" });
+//! defer allocator.free(html);
+//!
+//! // Render from template string (for embedded or cached templates)
+//! const tpl = "h1 #{title}";
+//! const out = try engine.renderTpl(allocator, tpl, .{ .title = "Hello" });
+//! defer allocator.free(out);
 //! ```
 
 const std = @import("std");
 const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
 const runtime = @import("runtime.zig");
-const ast = @import("ast.zig");
 
 const Runtime = runtime.Runtime;
 const Context = runtime.Context;
-const Value = runtime.Value;
 
 /// Configuration options for the ViewEngine.
 pub const Options = struct {
-    /// Root directory containing view templates.
-    views_dir: []const u8,
+    /// Root directory containing view templates. Defaults to current directory.
+    views_dir: []const u8 = ".",
     /// Subdirectory within views_dir containing mixin files.
     /// Defaults to "mixins". Mixins are lazy-loaded on first use.
     /// Set to null to disable mixin directory lookup.
@@ -57,49 +59,22 @@ pub const ViewEngineError = error{
 /// ViewEngine manages template rendering with a configured views directory.
 /// Mixins are lazy-loaded from the mixins directory when first called.
 pub const ViewEngine = struct {
-    allocator: std.mem.Allocator,
     options: Options,
-    /// Absolute path to views directory.
-    views_path: []const u8,
-    /// Absolute path to mixins directory (resolved at init).
-    mixins_path: []const u8,
+    /// Cached file resolver (avoid creating new closure each render).
+    file_resolver: runtime.FileResolver,
 
     /// Initializes the ViewEngine with the given options.
-    pub fn init(allocator: std.mem.Allocator, options: Options) !ViewEngine {
-        // Resolve views directory to absolute path
-        const views_path = try std.fs.cwd().realpathAlloc(allocator, options.views_dir);
-        errdefer allocator.free(views_path);
-
-        // Resolve mixins directory path (may not exist yet)
-        var mixins_path: []const u8 = "";
-        if (options.mixins_dir) |mixins_subdir| {
-            mixins_path = try std.fs.path.join(allocator, &.{ views_path, mixins_subdir });
-        }
-
+    pub fn init(options: Options) ViewEngine {
         return ViewEngine{
-            .allocator = allocator,
             .options = options,
-            .views_path = views_path,
-            .mixins_path = mixins_path,
+            .file_resolver = createFileResolver(),
         };
     }
 
-    /// Releases all resources held by the ViewEngine.
-    pub fn deinit(self: *ViewEngine) void {
-        self.allocator.free(self.views_path);
-        if (self.mixins_path.len > 0) {
-            self.allocator.free(self.mixins_path);
-        }
-    }
-
-    /// Renders a template with the given data context.
+    /// Renders a template file with the given data context.
     ///
     /// The template path is relative to the views directory.
     /// The .pug extension is added automatically if not present.
-    ///
-    /// Mixins are resolved in order:
-    /// 1. Mixins defined in the template itself
-    /// 2. Mixins from the mixins directory (lazy-loaded)
     ///
     /// Example:
     /// ```zig
@@ -107,7 +82,7 @@ pub const ViewEngine = struct {
     ///     .title = "Home Page",
     /// });
     /// ```
-    pub fn render(self: *ViewEngine, allocator: std.mem.Allocator, template_path: []const u8, data: anytype) ![]u8 {
+    pub fn render(self: *const ViewEngine, allocator: std.mem.Allocator, template_path: []const u8, data: anytype) ![]u8 {
         // Build full path
         const full_path = try self.resolvePath(allocator, template_path);
         defer allocator.free(full_path);
@@ -117,6 +92,29 @@ pub const ViewEngine = struct {
             return ViewEngineError.TemplateNotFound;
         };
         defer allocator.free(source);
+
+        return self.renderTpl(allocator, source, data);
+    }
+
+    /// Renders a template string directly without file I/O.
+    ///
+    /// Use this when you have the template source in memory (e.g., from a cache
+    /// or embedded at compile time). This avoids file system overhead.
+    ///
+    /// For high-performance loops, pass an arena allocator that resets between iterations.
+    ///
+    /// Example:
+    /// ```zig
+    /// const tpl = "h1 Hello, #{name}";
+    /// const html = try engine.renderTpl(allocator, tpl, .{ .name = "World" });
+    /// ```
+    pub fn renderTpl(self: *const ViewEngine, allocator: std.mem.Allocator, source: []const u8, data: anytype) ![]u8 {
+        // Resolve mixins path
+        const mixins_path = if (self.options.mixins_dir) |mixins_subdir|
+            try std.fs.path.join(allocator, &.{ self.options.views_dir, mixins_subdir })
+        else
+            "";
+        defer if (mixins_path.len > 0) allocator.free(mixins_path);
 
         // Tokenize
         var lexer = Lexer.init(allocator, source);
@@ -138,12 +136,12 @@ pub const ViewEngine = struct {
             try ctx.set(field.name, runtime.toValue(allocator, value));
         }
 
-        // Create runtime with file resolver for includes/extends and lazy mixin loading
+        // Create runtime with cached file resolver
         var rt = Runtime.init(allocator, &ctx, .{
             .pretty = self.options.pretty,
-            .base_dir = self.views_path,
-            .mixins_dir = self.mixins_path,
-            .file_resolver = createFileResolver(),
+            .base_dir = self.options.views_dir,
+            .mixins_dir = mixins_path,
+            .file_resolver = self.file_resolver,
         });
         defer rt.deinit();
 
@@ -151,7 +149,7 @@ pub const ViewEngine = struct {
     }
 
     /// Resolves a template path relative to views directory.
-    fn resolvePath(self: *ViewEngine, allocator: std.mem.Allocator, template_path: []const u8) ![]const u8 {
+    fn resolvePath(self: *const ViewEngine, allocator: std.mem.Allocator, template_path: []const u8) ![]const u8 {
         // Add extension if not present
         const with_ext = if (std.mem.endsWith(u8, template_path, self.options.extension))
             try allocator.dupe(u8, template_path)
@@ -159,7 +157,7 @@ pub const ViewEngine = struct {
             try std.fmt.allocPrint(allocator, "{s}{s}", .{ template_path, self.options.extension });
         defer allocator.free(with_ext);
 
-        return std.fs.path.join(allocator, &.{ self.views_path, with_ext });
+        return std.fs.path.join(allocator, &.{ self.options.views_dir, with_ext });
     }
 
     /// Creates a file resolver function for the runtime.

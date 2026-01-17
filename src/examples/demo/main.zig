@@ -21,17 +21,13 @@ const App = struct {
     allocator: Allocator,
     view: pugz.ViewEngine,
 
-    pub fn init(allocator: Allocator) !App {
+    pub fn init(allocator: Allocator) App {
         return .{
             .allocator = allocator,
-            .view = try pugz.ViewEngine.init(allocator, .{
+            .view = pugz.ViewEngine.init(.{
                 .views_dir = "src/examples/demo/views",
             }),
         };
-    }
-
-    pub fn deinit(self: *App) void {
-        self.view.deinit();
     }
 };
 
@@ -42,8 +38,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Initialize view engine once at startup
-    var app = try App.init(allocator);
-    defer app.deinit();
+    var app = App.init(allocator);
 
     const port = 8080;
     var server = try httpz.Server(*App).init(allocator, .{ .port = port }, &app);
@@ -82,6 +77,7 @@ pub fn main() !void {
 fn index(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
     const html = app.view.render(app.allocator, "index", .{
         .title = "Home",
+        .authenticated = true,
     }) catch |err| {
         res.status = 500;
         res.body = @errorName(err);

@@ -8,6 +8,18 @@
 //! - Calling mixins
 //! - Template inheritance (extends/block)
 //! - Includes
+//!
+//! **Memory Management**: Use an arena allocator for best performance and
+//! automatic cleanup. The runtime allocates intermediate strings during
+//! template processing that are cleaned up when the arena is reset/deinitialized.
+//!
+//! ```zig
+//! var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+//! defer arena.deinit();
+//!
+//! const html = try engine.renderTpl(arena.allocator(), template, data);
+//! // Use html... arena.deinit() frees everything
+//! ```
 
 const std = @import("std");
 const ast = @import("ast.zig");
@@ -86,7 +98,10 @@ pub const RuntimeError = error{
 pub const Context = struct {
     allocator: std.mem.Allocator,
     /// Stack of variable scopes (innermost last).
+    /// We keep all scopes allocated and track active depth with scope_depth.
     scopes: std.ArrayListUnmanaged(std.StringHashMapUnmanaged(Value)),
+    /// Current active scope depth (scopes[0..scope_depth] are active).
+    scope_depth: usize,
     /// Mixin definitions available in this context.
     mixins: std.StringHashMapUnmanaged(ast.MixinDef),
 
@@ -94,6 +109,7 @@ pub const Context = struct {
         return .{
             .allocator = allocator,
             .scopes = .empty,
+            .scope_depth = 0,
             .mixins = .empty,
         };
     }
@@ -107,32 +123,40 @@ pub const Context = struct {
     }
 
     /// Pushes a new scope onto the stack.
+    /// Reuses previously allocated scopes when possible to avoid allocation overhead.
     pub fn pushScope(self: *Context) !void {
-        try self.scopes.append(self.allocator, .empty);
+        if (self.scope_depth < self.scopes.items.len) {
+            // Reuse existing scope slot (already cleared on pop)
+        } else {
+            // Need to allocate a new scope
+            try self.scopes.append(self.allocator, .empty);
+        }
+        self.scope_depth += 1;
     }
 
     /// Pops the current scope from the stack.
+    /// Clears scope for reuse but does NOT deallocate.
     pub fn popScope(self: *Context) void {
-        if (self.scopes.items.len > 0) {
-            var scope = self.scopes.items[self.scopes.items.len - 1];
-            self.scopes.items.len -= 1;
-            scope.deinit(self.allocator);
+        if (self.scope_depth > 0) {
+            self.scope_depth -= 1;
+            // Clear the scope so old values don't leak into next use
+            self.scopes.items[self.scope_depth].clearRetainingCapacity();
         }
     }
 
     /// Sets a variable in the current scope.
     pub fn set(self: *Context, name: []const u8, value: Value) !void {
-        if (self.scopes.items.len == 0) {
+        if (self.scope_depth == 0) {
             try self.pushScope();
         }
-        const current = &self.scopes.items[self.scopes.items.len - 1];
+        const current = &self.scopes.items[self.scope_depth - 1];
         try current.put(self.allocator, name, value);
     }
 
     /// Gets a variable, searching from innermost to outermost scope.
     pub fn get(self: *Context, name: []const u8) ?Value {
         // Search from innermost to outermost scope
-        var i = self.scopes.items.len;
+        var i = self.scope_depth;
         while (i > 0) {
             i -= 1;
             if (self.scopes.items[i].get(name)) |value| {
@@ -570,10 +594,12 @@ pub const Runtime = struct {
                     return;
                 }
 
-                for (items, 0..) |item, index| {
-                    try self.context.pushScope();
-                    defer self.context.popScope();
+                // Push scope once before the loop - reuse for all iterations
+                try self.context.pushScope();
+                defer self.context.popScope();
 
+                for (items, 0..) |item, index| {
+                    // Just overwrite the loop variable (no scope push/pop per iteration)
                     try self.context.set(each.value_name, item);
                     if (each.index_name) |idx_name| {
                         try self.context.set(idx_name, Value.integer(@intCast(index)));
@@ -592,12 +618,14 @@ pub const Runtime = struct {
                     return;
                 }
 
+                // Push scope once before the loop - reuse for all iterations
+                try self.context.pushScope();
+                defer self.context.popScope();
+
                 var iter = obj.iterator();
                 var index: usize = 0;
                 while (iter.next()) |entry| {
-                    try self.context.pushScope();
-                    defer self.context.popScope();
-
+                    // Just overwrite the loop variable (no scope push/pop per iteration)
                     try self.context.set(each.value_name, entry.value_ptr.*);
                     if (each.index_name) |idx_name| {
                         try self.context.set(idx_name, Value.str(entry.key_ptr.*));
@@ -1274,15 +1302,28 @@ pub const Runtime = struct {
     }
 
     fn writeEscaped(self: *Runtime, str: []const u8) Error!void {
-        for (str) |c| {
-            switch (c) {
-                '&' => try self.write("&amp;"),
-                '<' => try self.write("&lt;"),
-                '>' => try self.write("&gt;"),
-                '"' => try self.write("&quot;"),
-                '\'' => try self.write("&#x27;"),
-                else => try self.output.append(self.allocator, c),
+        var start: usize = 0;
+        for (str, 0..) |c, i| {
+            const escape: ?[]const u8 = switch (c) {
+                '&' => "&amp;",
+                '<' => "&lt;",
+                '>' => "&gt;",
+                '"' => "&quot;",
+                '\'' => "&#x27;",
+                else => null,
+            };
+            if (escape) |esc| {
+                // Write accumulated non-escaped chars first
+                if (i > start) {
+                    try self.output.appendSlice(self.allocator, str[start..i]);
+                }
+                try self.output.appendSlice(self.allocator, esc);
+                start = i + 1;
             }
+        }
+        // Write remaining non-escaped chars
+        if (start < str.len) {
+            try self.output.appendSlice(self.allocator, str[start..]);
         }
     }
 };

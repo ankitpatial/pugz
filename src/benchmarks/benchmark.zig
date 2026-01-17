@@ -10,7 +10,7 @@
 //! - Memory usage per render
 
 const std = @import("std");
-const pugz = @import("root.zig");
+const pugz = @import("pugz");
 
 const Allocator = std.mem.Allocator;
 

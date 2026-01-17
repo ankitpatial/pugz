@@ -1,0 +1,33 @@
+.search-results-container
+  .searching#searching
+    .wait-indicator-icon Searching...
+  #resultsContainer
+    .hd
+      span.count
+        span#count= totalCount
+        |  results
+      .view-modifiers
+        .view-select
+          | View:
+          .view-icon.view-icon-selected#viewIconGallery
+            i.icon-th
+          .view-icon#viewIconList
+            i.icon-th-list
+    #resultsTarget
+      .search-results.view-gallery
+        each searchRecord in searchRecords
+          .search-item
+            .search-item-container.drop-shadow
+              .img-container
+                img(src=searchRecord.imgUrl)
+              h4.title
+                a(href=searchRecord.viewItemUrl)= searchRecord.title
+              | #{searchRecord.description}
+              if searchRecord.featured
+                div Featured!
+              if searchRecord.sizes
+                div
+                  | Sizes available:
+                  ul
+                    each size in searchRecord.sizes
+                      li= size

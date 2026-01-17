@@ -112,9 +112,12 @@ pub fn build(b: *std.Build) void {
     const bench = b.addExecutable(.{
         .name = "bench",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmark.zig"),
+            .root_source_file = b.path("src/benchmarks/benchmark.zig"),
             .target = target,
             .optimize = .ReleaseFast, // Always use ReleaseFast for benchmarks
+            .imports = &.{
+                .{ .name = "pugz", .module = mod },
+            },
         }),
     });
 
@@ -125,6 +128,51 @@ pub fn build(b: *std.Build) void {
 
     const bench_step = b.step("bench", "Run rendering benchmarks");
     bench_step.dependOn(&run_bench.step);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Comparison Benchmark Tests (template-engine-bench templates)
+    // Run all:      zig build test-bench
+    // Run one:      zig build test-bench -- simple-0
+    // ─────────────────────────────────────────────────────────────────────────
+    const bench_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/benchmarks/comparison.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "pugz", .module = mod },
+            },
+        }),
+        .filters = if (b.args) |args| args else &.{},
+    });
+
+    const run_bench_tests = b.addRunArtifact(bench_tests);
+
+    const bench_test_step = b.step("test-bench", "Run comparison benchmarks (template-engine-bench)");
+    bench_test_step.dependOn(&run_bench_tests.step);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Profile executable (for CPU profiling)
+    // ─────────────────────────────────────────────────────────────────────────
+    const profile = b.addExecutable(.{
+        .name = "profile",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/benchmarks/profile_friends.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "pugz", .module = mod },
+            },
+        }),
+    });
+
+    b.installArtifact(profile);
+
+    const run_profile = b.addRunArtifact(profile);
+    run_profile.step.dependOn(b.getInstallStep());
+
+    const profile_step = b.step("profile", "Run friends template for profiling");
+    profile_step.dependOn(&run_profile.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
