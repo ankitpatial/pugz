@@ -80,7 +80,7 @@ pub fn main() !void {
 
 /// Handler for GET /
 fn index(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(app.allocator, "layout", .{
+    const html = app.view.render(app.allocator, "index", .{
         .title = "Home",
     }) catch |err| {
         res.status = 500;

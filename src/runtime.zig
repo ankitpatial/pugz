@@ -880,6 +880,22 @@ pub const Runtime = struct {
     fn evaluateExpression(self: *Runtime, expr: []const u8) Value {
         const trimmed = std.mem.trim(u8, expr, " \t");
 
+        // Check for string concatenation with + operator
+        // e.g., "btn btn-" + type or "hello " + name + "!"
+        if (self.findConcatOperator(trimmed)) |op_pos| {
+            const left = std.mem.trim(u8, trimmed[0..op_pos], " \t");
+            const right = std.mem.trim(u8, trimmed[op_pos + 1 ..], " \t");
+
+            const left_val = self.evaluateExpression(left);
+            const right_val = self.evaluateExpression(right);
+
+            const left_str = left_val.toString(self.allocator) catch return Value.null;
+            const right_str = right_val.toString(self.allocator) catch return Value.null;
+
+            const result = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ left_str, right_str }) catch return Value.null;
+            return Value.str(result);
+        }
+
         // Check for string literal
         if (trimmed.len >= 2) {
             if ((trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') or
@@ -901,6 +917,44 @@ pub const Runtime = struct {
 
         // Variable lookup (supports dot notation: user.name)
         return self.lookupVariable(trimmed);
+    }
+
+    /// Finds the position of a + operator that's not inside quotes or brackets.
+    /// Returns null if no such operator exists.
+    fn findConcatOperator(_: *Runtime, expr: []const u8) ?usize {
+        var in_string: u8 = 0; // 0 = not in string, '"' or '\'' = in that type of string
+        var bracket_depth: usize = 0;
+        var paren_depth: usize = 0;
+        var brace_depth: usize = 0;
+
+        for (expr, 0..) |c, i| {
+            if (in_string != 0) {
+                if (c == in_string) {
+                    in_string = 0;
+                } else if (c == '\\' and i + 1 < expr.len) {
+                    // Skip escaped character - we'll handle it in next iteration
+                    continue;
+                }
+            } else {
+                switch (c) {
+                    '"', '\'' => in_string = c,
+                    '[' => bracket_depth += 1,
+                    ']' => bracket_depth -|= 1,
+                    '(' => paren_depth += 1,
+                    ')' => paren_depth -|= 1,
+                    '{' => brace_depth += 1,
+                    '}' => brace_depth -|= 1,
+                    '+' => {
+                        if (bracket_depth == 0 and paren_depth == 0 and brace_depth == 0) {
+                            return i;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        return null;
     }
 
     /// Looks up a variable with dot notation support.

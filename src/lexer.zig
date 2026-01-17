@@ -635,115 +635,107 @@ pub const Lexer = struct {
 
     /// Scans an attribute value: "string", 'string', `template`, {object}, or expression.
     /// Handles expression continuation with operators like + for string concatenation.
-    /// Note: Quotes are preserved in the token value so evaluateExpression can detect string literals.
+    /// Emits a single token for the entire expression (e.g., "btn btn-" + type).
     fn scanAttrValue(self: *Lexer) !void {
         const start = self.pos;
-        try self.scanAttrValuePart();
 
-        // Check for expression continuation (e.g., "string" + variable)
+        // Scan the complete expression including operators
         while (!self.isAtEnd()) {
-            // Skip whitespace
-            while (self.peek() == ' ' or self.peek() == '\t') {
+            const c = self.peek();
+
+            if (c == '"' or c == '\'') {
+                // Quoted string
+                const quote = c;
                 self.advance();
-            }
-
-            // Check for continuation operator
-            const ch = self.peek();
-            if (ch == '+' or ch == '-' or ch == '*' or ch == '/') {
-                self.advance(); // consume operator
-
-                // Skip whitespace after operator
+                while (!self.isAtEnd() and self.peek() != quote) {
+                    if (self.peek() == '\\' and self.peekNext() == quote) {
+                        self.advance(); // skip backslash
+                    }
+                    self.advance();
+                }
+                if (self.peek() == quote) self.advance();
+            } else if (c == '`') {
+                // Template literal
+                self.advance();
+                while (!self.isAtEnd() and self.peek() != '`') {
+                    self.advance();
+                }
+                if (self.peek() == '`') self.advance();
+            } else if (c == '{') {
+                // Object literal - scan matching braces
+                var depth: usize = 0;
+                while (!self.isAtEnd()) {
+                    const ch = self.peek();
+                    if (ch == '{') depth += 1;
+                    if (ch == '}') {
+                        depth -= 1;
+                        self.advance();
+                        if (depth == 0) break;
+                        continue;
+                    }
+                    self.advance();
+                }
+            } else if (c == '[') {
+                // Array literal - scan matching brackets
+                var depth: usize = 0;
+                while (!self.isAtEnd()) {
+                    const ch = self.peek();
+                    if (ch == '[') depth += 1;
+                    if (ch == ']') {
+                        depth -= 1;
+                        self.advance();
+                        if (depth == 0) break;
+                        continue;
+                    }
+                    self.advance();
+                }
+            } else if (c == '(') {
+                // Function call - scan matching parens
+                var depth: usize = 0;
+                while (!self.isAtEnd()) {
+                    const ch = self.peek();
+                    if (ch == '(') depth += 1;
+                    if (ch == ')') {
+                        depth -= 1;
+                        self.advance();
+                        if (depth == 0) break;
+                        continue;
+                    }
+                    self.advance();
+                }
+            } else if (c == ')' or c == ',') {
+                // End of attribute value
+                break;
+            } else if (c == ' ' or c == '\t') {
+                // Whitespace - check if followed by operator (continue) or not (end)
+                const ws_start = self.pos;
                 while (self.peek() == ' ' or self.peek() == '\t') {
                     self.advance();
                 }
-
-                // Scan next part of expression
-                try self.scanAttrValuePart();
-            } else {
+                const next = self.peek();
+                if (next == '+' or next == '-' or next == '*' or next == '/') {
+                    // Operator follows - continue scanning (include whitespace)
+                    continue;
+                } else {
+                    // Not an operator - rewind and end
+                    self.pos = ws_start;
+                    break;
+                }
+            } else if (c == '+' or c == '-' or c == '*' or c == '/') {
+                // Operator - include it and continue
+                self.advance();
+            } else if (c == '\n' or c == '\r') {
+                // Newline ends the value
                 break;
+            } else {
+                // Regular character (alphanumeric, etc.)
+                self.advance();
             }
         }
 
-        // Emit the entire expression as a single token
-        const end = self.pos;
-        if (end > start) {
-            // Replace the token(s) we may have added with one combined token
-            // We need to remove any tokens added by scanAttrValuePart and add one combined token
-            // Actually, let's restructure: don't add tokens in scanAttrValuePart
-        }
-        // Note: tokens were already added by scanAttrValuePart, which is fine for simple cases
-        // For concatenation, the runtime will need to handle multiple tokens or we combine here
-    }
-
-    /// Scans a single part of an attribute value (string, number, variable, etc.)
-    fn scanAttrValuePart(self: *Lexer) !void {
-        const c = self.peek();
-
-        if (c == '"' or c == '\'') {
-            // Quoted string with escape support - preserve quotes for expression evaluation
-            const quote = c;
-            const part_start = self.pos; // Include opening quote
-            self.advance();
-
-            while (!self.isAtEnd() and self.peek() != quote) {
-                if (self.peek() == '\\' and self.peekNext() == quote) {
-                    self.advance(); // skip backslash
-                }
-                self.advance();
-            }
-
-            if (self.peek() == quote) self.advance(); // Include closing quote
-            try self.addToken(.attr_value, self.source[part_start..self.pos]);
-        } else if (c == '`') {
-            // Template literal - preserve backticks
-            const part_start = self.pos;
-            self.advance();
-
-            while (!self.isAtEnd() and self.peek() != '`') {
-                self.advance();
-            }
-
-            if (self.peek() == '`') self.advance();
-            try self.addToken(.attr_value, self.source[part_start..self.pos]);
-        } else if (c == '{') {
-            // Object literal
-            try self.scanObjectLiteral();
-        } else if (c == '[') {
-            // Array literal
-            try self.scanArrayLiteral();
-        } else {
-            // Unquoted expression (e.g., variable, function call)
-            const part_start = self.pos;
-            var paren_depth: usize = 0;
-            var bracket_depth: usize = 0;
-
-            while (!self.isAtEnd()) {
-                const ch = self.peek();
-                if (ch == '(') {
-                    paren_depth += 1;
-                } else if (ch == ')') {
-                    if (paren_depth == 0) break;
-                    paren_depth -= 1;
-                } else if (ch == '[') {
-                    bracket_depth += 1;
-                } else if (ch == ']') {
-                    if (bracket_depth == 0) break;
-                    bracket_depth -= 1;
-                } else if (ch == ',' and paren_depth == 0 and bracket_depth == 0) {
-                    break;
-                } else if ((ch == ' ' or ch == '\t' or ch == '\n') and paren_depth == 0 and bracket_depth == 0) {
-                    break;
-                } else if ((ch == '+' or ch == '-' or ch == '*' or ch == '/') and paren_depth == 0 and bracket_depth == 0) {
-                    // Stop at operators - they'll be handled by scanAttrValue
-                    break;
-                }
-                self.advance();
-            }
-
-            const value = std.mem.trim(u8, self.source[part_start..self.pos], " \t");
-            if (value.len > 0) {
-                try self.addToken(.attr_value, value);
-            }
+        const value = std.mem.trim(u8, self.source[start..self.pos], " \t");
+        if (value.len > 0) {
+            try self.addToken(.attr_value, value);
         }
     }
 
