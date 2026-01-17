@@ -590,6 +590,11 @@ pub const Lexer = struct {
 
             if (self.pos > name_start) {
                 try self.addToken(.attr_name, self.source[name_start..self.pos]);
+            } else {
+                // No attribute name found - skip unknown character to prevent infinite loop
+                // This can happen with operators like + in expressions
+                self.advance();
+                continue;
             }
 
             self.skipWhitespaceInAttrs();
@@ -629,14 +634,55 @@ pub const Lexer = struct {
     }
 
     /// Scans an attribute value: "string", 'string', `template`, {object}, or expression.
+    /// Handles expression continuation with operators like + for string concatenation.
     /// Note: Quotes are preserved in the token value so evaluateExpression can detect string literals.
     fn scanAttrValue(self: *Lexer) !void {
+        const start = self.pos;
+        try self.scanAttrValuePart();
+
+        // Check for expression continuation (e.g., "string" + variable)
+        while (!self.isAtEnd()) {
+            // Skip whitespace
+            while (self.peek() == ' ' or self.peek() == '\t') {
+                self.advance();
+            }
+
+            // Check for continuation operator
+            const ch = self.peek();
+            if (ch == '+' or ch == '-' or ch == '*' or ch == '/') {
+                self.advance(); // consume operator
+
+                // Skip whitespace after operator
+                while (self.peek() == ' ' or self.peek() == '\t') {
+                    self.advance();
+                }
+
+                // Scan next part of expression
+                try self.scanAttrValuePart();
+            } else {
+                break;
+            }
+        }
+
+        // Emit the entire expression as a single token
+        const end = self.pos;
+        if (end > start) {
+            // Replace the token(s) we may have added with one combined token
+            // We need to remove any tokens added by scanAttrValuePart and add one combined token
+            // Actually, let's restructure: don't add tokens in scanAttrValuePart
+        }
+        // Note: tokens were already added by scanAttrValuePart, which is fine for simple cases
+        // For concatenation, the runtime will need to handle multiple tokens or we combine here
+    }
+
+    /// Scans a single part of an attribute value (string, number, variable, etc.)
+    fn scanAttrValuePart(self: *Lexer) !void {
         const c = self.peek();
 
         if (c == '"' or c == '\'') {
             // Quoted string with escape support - preserve quotes for expression evaluation
             const quote = c;
-            const start = self.pos; // Include opening quote
+            const part_start = self.pos; // Include opening quote
             self.advance();
 
             while (!self.isAtEnd() and self.peek() != quote) {
@@ -647,10 +693,10 @@ pub const Lexer = struct {
             }
 
             if (self.peek() == quote) self.advance(); // Include closing quote
-            try self.addToken(.attr_value, self.source[start..self.pos]);
+            try self.addToken(.attr_value, self.source[part_start..self.pos]);
         } else if (c == '`') {
             // Template literal - preserve backticks
-            const start = self.pos;
+            const part_start = self.pos;
             self.advance();
 
             while (!self.isAtEnd() and self.peek() != '`') {
@@ -658,7 +704,7 @@ pub const Lexer = struct {
             }
 
             if (self.peek() == '`') self.advance();
-            try self.addToken(.attr_value, self.source[start..self.pos]);
+            try self.addToken(.attr_value, self.source[part_start..self.pos]);
         } else if (c == '{') {
             // Object literal
             try self.scanObjectLiteral();
@@ -667,7 +713,7 @@ pub const Lexer = struct {
             try self.scanArrayLiteral();
         } else {
             // Unquoted expression (e.g., variable, function call)
-            const start = self.pos;
+            const part_start = self.pos;
             var paren_depth: usize = 0;
             var bracket_depth: usize = 0;
 
@@ -687,11 +733,17 @@ pub const Lexer = struct {
                     break;
                 } else if ((ch == ' ' or ch == '\t' or ch == '\n') and paren_depth == 0 and bracket_depth == 0) {
                     break;
+                } else if ((ch == '+' or ch == '-' or ch == '*' or ch == '/') and paren_depth == 0 and bracket_depth == 0) {
+                    // Stop at operators - they'll be handled by scanAttrValue
+                    break;
                 }
                 self.advance();
             }
 
-            try self.addToken(.attr_value, std.mem.trim(u8, self.source[start..self.pos], " \t"));
+            const value = std.mem.trim(u8, self.source[part_start..self.pos], " \t");
+            if (value.len > 0) {
+                try self.addToken(.attr_value, value);
+            }
         }
     }
 

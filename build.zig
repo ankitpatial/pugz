@@ -78,17 +78,17 @@ pub fn build(b: *std.Build) void {
     test_unit_step.dependOn(&run_mod_tests.step);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Example: app_01 - Template Inheritance Demo with http.zig
+    // Example: demo - Template Inheritance Demo with http.zig
     // ─────────────────────────────────────────────────────────────────────────
     const httpz_dep = b.dependency("httpz", .{
         .target = target,
         .optimize = optimize,
     });
 
-    const app_01 = b.addExecutable(.{
-        .name = "app_01",
+    const demo = b.addExecutable(.{
+        .name = "demo",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/app_01/main.zig"),
+            .root_source_file = b.path("src/examples/demo/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -98,13 +98,13 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    b.installArtifact(app_01);
+    b.installArtifact(demo);
 
-    const run_app_01 = b.addRunArtifact(app_01);
-    run_app_01.step.dependOn(b.getInstallStep());
+    const run_demo = b.addRunArtifact(demo);
+    run_demo.step.dependOn(b.getInstallStep());
 
-    const app_01_step = b.step("app-01", "Run the template inheritance demo web app");
-    app_01_step.dependOn(&run_app_01.step);
+    const demo_step = b.step("demo", "Run the template inheritance demo web app");
+    demo_step.dependOn(&run_demo.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
