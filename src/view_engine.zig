@@ -45,6 +45,8 @@ pub const Options = struct {
     extension: []const u8 = ".pug",
     /// Enable pretty-printing with indentation.
     pretty: bool = true,
+    /// Maximum template file size in bytes. Defaults to 5 MB.
+    max_file_size: usize = 5 * 1024 * 1024,
 };
 
 /// Error types for ViewEngine operations.
@@ -88,7 +90,7 @@ pub const ViewEngine = struct {
         defer allocator.free(full_path);
 
         // Read template file
-        const source = std.fs.cwd().readFileAlloc(allocator, full_path, 1024 * 1024) catch {
+        const source = std.fs.cwd().readFileAlloc(allocator, full_path, self.options.max_file_size) catch {
             return ViewEngineError.TemplateNotFound;
         };
         defer allocator.free(source);
@@ -148,7 +150,7 @@ pub const ViewEngine = struct {
         return rt.renderOwned(doc);
     }
 
-    /// Resolves a template path relative to views directory.
+    /// Resolves a template path relative to views directory, adding extension if needed.
     fn resolvePath(self: *const ViewEngine, allocator: std.mem.Allocator, template_path: []const u8) ![]const u8 {
         // Add extension if not present
         const with_ext = if (std.mem.endsWith(u8, template_path, self.options.extension))
@@ -164,7 +166,7 @@ pub const ViewEngine = struct {
     fn createFileResolver() runtime.FileResolver {
         return struct {
             fn resolve(allocator: std.mem.Allocator, path: []const u8) ?[]const u8 {
-                return std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch null;
+                return std.fs.cwd().readFileAlloc(allocator, path, 5 * 1024 * 1024) catch null;
             }
         }.resolve;
     }
