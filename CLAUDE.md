@@ -9,8 +9,8 @@ Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It implements Pug
 ## Build Commands
 
 - `zig build` - Build the project (output in `zig-out/`)
-- `zig build run` - Build and run the executable
-- `zig build test` - Run all tests (113 tests currently)
+- `zig build test` - Run all tests
+- `zig build app-01` - Run the example web app (http://localhost:8080)
 
 ## Architecture Overview
 
@@ -29,8 +29,8 @@ Source → Lexer → Tokens → Parser → AST → Runtime → HTML
 | **src/ast.zig** | AST node definitions (Element, Text, Conditional, Each, Mixin, etc.) |
 | **src/runtime.zig** | Evaluates AST with data context, produces final HTML. Handles variable interpolation, conditionals, loops, mixins. |
 | **src/codegen.zig** | Static HTML generation (without runtime evaluation). Outputs placeholders for dynamic content. |
-| **src/root.zig** | Public library API - exports `renderTemplate()` and core types. |
-| **src/main.zig** | CLI executable example. |
+| **src/view_engine.zig** | High-level ViewEngine for web servers. Manages views directory, auto-loads mixins. |
+| **src/root.zig** | Public library API - exports `ViewEngine`, `renderTemplate()` and core types. |
 
 ### Test Files
 
@@ -239,7 +239,63 @@ block prepend styles
 //- This is a silent comment (not in output)
 ```
 
-## Server Usage Example
+## Server Usage
+
+### ViewEngine (Recommended)
+
+The `ViewEngine` provides the simplest API for web servers:
+
+```zig
+const std = @import("std");
+const pugz = @import("pugz");
+
+// Initialize once at server startup
+var engine = try pugz.ViewEngine.init(allocator, .{
+    .views_dir = "src/views",     // Root views directory
+    .mixins_dir = "mixins",       // Auto-load mixins from views/mixins/ (optional)
+    .extension = ".pug",          // File extension (default: .pug)
+    .pretty = true,               // Pretty-print output (default: true)
+});
+defer engine.deinit();
+
+// In request handler - use arena allocator per request
+pub fn handleRequest(engine: *pugz.ViewEngine, allocator: std.mem.Allocator) ![]u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    // Template path is relative to views_dir, extension added automatically
+    return try engine.render(arena.allocator(), "pages/home", .{
+        .title = "Home",
+        .user = .{ .name = "Alice" },
+    });
+}
+```
+
+### Directory Structure
+
+```
+src/views/
+├── mixins/           # Auto-loaded mixins (optional)
+│   ├── buttons.pug   # mixin btn(text), mixin btn-link(href, text)
+│   └── cards.pug     # mixin card(title), mixin card-simple(title, body)
+├── layouts/
+│   └── base.pug      # Base layout with blocks
+├── partials/
+│   ├── header.pug
+│   └── footer.pug
+└── pages/
+    ├── home.pug      # extends layouts/base
+    └── about.pug     # extends layouts/base
+```
+
+Templates can use:
+- `extends layouts/base` - Paths relative to views_dir
+- `include partials/header` - Paths relative to views_dir
+- `+btn("Click")` - Mixins from mixins/ dir available automatically
+
+### Low-Level API
+
+For inline templates or custom use cases:
 
 ```zig
 const std = @import("std");

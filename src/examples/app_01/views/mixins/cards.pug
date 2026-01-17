@@ -1,0 +1,11 @@
+mixin card(title)
+  .card
+    .card-header
+      h3= title
+    .card-body
+      block
+
+mixin card-simple(title, body)
+  .card
+    h3= title
+    p= body

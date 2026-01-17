@@ -1,0 +1,5 @@
+mixin btn(text, type="primary")
+  button(class="btn btn-" + type)= text
+
+mixin btn-link(href, text)
+  a.btn.btn-link(href=href)= text
