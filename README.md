@@ -69,6 +69,21 @@ const html = try engine.renderTpl(allocator,
 });
 ```
 
+## Development
+
+### Run Tests
+
+```bash
+zig build test
+```
+
+### Run Benchmarks
+
+```bash
+zig build bench      # Run rendering benchmarks
+zig build bench-2    # Run comparison benchmarks
+```
+
 ## Template Syntax
 
 ```pug
@@ -91,15 +106,29 @@ html
 
 ## Benchmarks
 
-2000 iterations on MacBook Air M2:
+### Rendering Benchmarks (`zig build bench`)
+
+20,000 iterations on MacBook Air M2:
+
+| Template | Avg | Renders/sec | Output |
+|----------|-----|-------------|--------|
+| Simple | 11.81 us | 84,701 | 155 bytes |
+| Medium | 21.10 us | 47,404 | 1,211 bytes |
+| Complex | 33.48 us | 29,872 | 4,852 bytes |
+
+### Comparison Benchmarks (`zig build bench-2`)
+
+2,000 iterations vs Pug.js:
 
 | Template | Pugz | Pug.js | Speedup |
 |----------|------|--------|---------|
-| simple-0 | 0.6ms | 2ms | 3.4x |
-| simple-1 | 6.9ms | 9ms | 1.3x |
-| simple-2 | 7.7ms | 9ms | 1.2x |
-| if-expression | 6.0ms | 12ms | 2.0x |
-| projects-escaped | 9.3ms | 86ms | 9.2x |
+| simple-0 | 0.5ms | 2ms | 3.8x |
+| simple-1 | 6.7ms | 9ms | 1.3x |
+| simple-2 | 5.4ms | 9ms | 1.7x |
+| if-expression | 4.4ms | 12ms | 2.7x |
+| projects-escaped | 7.3ms | 86ms | 11.7x |
+| search-results | 70.6ms | 41ms | 0.6x |
+| friends | 682.1ms | 110ms | 0.2x |
 
 ## License
 

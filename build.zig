@@ -136,7 +136,7 @@ pub fn build(b: *std.Build) void {
     // ─────────────────────────────────────────────────────────────────────────
     const bench_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmarks/comparison.zig"),
+            .root_source_file = b.path("src/benchmarks/benchmark_2.zig"),
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
@@ -148,7 +148,7 @@ pub fn build(b: *std.Build) void {
 
     const run_bench_tests = b.addRunArtifact(bench_tests);
 
-    const bench_test_step = b.step("test-bench", "Run comparison benchmarks (template-engine-bench)");
+    const bench_test_step = b.step("bench-2", "Run comparison benchmarks (template-engine-bench)");
     bench_test_step.dependOn(&run_bench_tests.step);
 
     // ─────────────────────────────────────────────────────────────────────────
