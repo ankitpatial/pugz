@@ -638,6 +638,7 @@ pub const Lexer = struct {
     /// Emits a single token for the entire expression (e.g., "btn btn-" + type).
     fn scanAttrValue(self: *Lexer) !void {
         const start = self.pos;
+        var after_operator = false; // Track if we just passed an operator
 
         // Scan the complete expression including operators
         while (!self.isAtEnd()) {
@@ -654,6 +655,7 @@ pub const Lexer = struct {
                     self.advance();
                 }
                 if (self.peek() == quote) self.advance();
+                after_operator = false;
             } else if (c == '`') {
                 // Template literal
                 self.advance();
@@ -661,6 +663,7 @@ pub const Lexer = struct {
                     self.advance();
                 }
                 if (self.peek() == '`') self.advance();
+                after_operator = false;
             } else if (c == '{') {
                 // Object literal - scan matching braces
                 var depth: usize = 0;
@@ -675,6 +678,7 @@ pub const Lexer = struct {
                     }
                     self.advance();
                 }
+                after_operator = false;
             } else if (c == '[') {
                 // Array literal - scan matching brackets
                 var depth: usize = 0;
@@ -689,6 +693,7 @@ pub const Lexer = struct {
                     }
                     self.advance();
                 }
+                after_operator = false;
             } else if (c == '(') {
                 // Function call - scan matching parens
                 var depth: usize = 0;
@@ -703,33 +708,46 @@ pub const Lexer = struct {
                     }
                     self.advance();
                 }
+                after_operator = false;
             } else if (c == ')' or c == ',') {
                 // End of attribute value
                 break;
             } else if (c == ' ' or c == '\t') {
-                // Whitespace - check if followed by operator (continue) or not (end)
-                const ws_start = self.pos;
-                while (self.peek() == ' ' or self.peek() == '\t') {
-                    self.advance();
-                }
-                const next = self.peek();
-                if (next == '+' or next == '-' or next == '*' or next == '/') {
-                    // Operator follows - continue scanning (include whitespace)
+                // Whitespace handling depends on context
+                if (after_operator) {
+                    // After an operator, skip whitespace and continue to get the operand
+                    while (self.peek() == ' ' or self.peek() == '\t') {
+                        self.advance();
+                    }
+                    after_operator = false;
                     continue;
                 } else {
-                    // Not an operator - rewind and end
-                    self.pos = ws_start;
-                    break;
+                    // Not after operator - check if followed by operator (continue) or not (end)
+                    const ws_start = self.pos;
+                    while (self.peek() == ' ' or self.peek() == '\t') {
+                        self.advance();
+                    }
+                    const next = self.peek();
+                    if (next == '+' or next == '-' or next == '*' or next == '/') {
+                        // Operator follows - continue scanning (include whitespace)
+                        continue;
+                    } else {
+                        // Not an operator - rewind and end
+                        self.pos = ws_start;
+                        break;
+                    }
                 }
             } else if (c == '+' or c == '-' or c == '*' or c == '/') {
-                // Operator - include it and continue
+                // Operator - include it and mark that we need to continue for the operand
                 self.advance();
+                after_operator = true;
             } else if (c == '\n' or c == '\r') {
                 // Newline ends the value
                 break;
             } else {
                 // Regular character (alphanumeric, etc.)
                 self.advance();
+                after_operator = false;
             }
         }
 

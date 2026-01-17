@@ -106,6 +106,26 @@ pub fn build(b: *std.Build) void {
     const demo_step = b.step("demo", "Run the template inheritance demo web app");
     demo_step.dependOn(&run_demo.step);
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Benchmark executable
+    // ─────────────────────────────────────────────────────────────────────────
+    const bench = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/benchmark.zig"),
+            .target = target,
+            .optimize = .ReleaseFast, // Always use ReleaseFast for benchmarks
+        }),
+    });
+
+    b.installArtifact(bench);
+
+    const run_bench = b.addRunArtifact(bench);
+    run_bench.step.dependOn(b.getInstallStep());
+
+    const bench_step = b.step("bench", "Run rendering benchmarks");
+    bench_step.dependOn(&run_bench.step);
+
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
     // The Zig build system is entirely implemented in userland, which means

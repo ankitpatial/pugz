@@ -715,3 +715,26 @@ test "Explicit self-closing tag with attributes" {
         \\<foo bar="baz" />
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// String concatenation in attributes
+// ─────────────────────────────────────────────────────────────────────────────
+
+test "Attribute with string concatenation" {
+    try expectOutput(
+        \\button(class="btn btn-" + btnType) Click
+    , .{ .btnType = "secondary" },
+        \\<button class="btn btn-secondary">Click</button>
+    );
+}
+
+test "Mixin with string concatenation in class" {
+    try expectOutput(
+        \\mixin btn(text, btnType="primary")
+        \\  button(class="btn btn-" + btnType)= text
+        \\+btn("Click me", "secondary")
+    , .{},
+        \\<button class="btn btn-secondary">Click me</button>
+    );
+}
+

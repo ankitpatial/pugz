@@ -175,6 +175,8 @@ pub const Runtime = struct {
     file_resolver: ?FileResolver,
     /// Base directory for resolving relative paths.
     base_dir: []const u8,
+    /// Directory containing mixin files for lazy-loading.
+    mixins_dir: []const u8,
     /// Block definitions from child template (for inheritance).
     blocks: std.StringHashMapUnmanaged(BlockDef),
     /// Current mixin block content (for `block` keyword inside mixins).
@@ -190,6 +192,9 @@ pub const Runtime = struct {
         base_dir: []const u8 = "",
         /// File resolver for loading templates.
         file_resolver: ?FileResolver = null,
+        /// Directory containing mixin files for lazy-loading.
+        /// If set, mixins not found in template will be loaded from here.
+        mixins_dir: []const u8 = "",
     };
 
     /// Error type for runtime operations.
@@ -204,6 +209,7 @@ pub const Runtime = struct {
             .options = options,
             .file_resolver = options.file_resolver,
             .base_dir = options.base_dir,
+            .mixins_dir = options.mixins_dir,
             .blocks = .empty,
             .mixin_block_content = null,
             .mixin_attributes = null,
@@ -362,13 +368,17 @@ pub const Runtime = struct {
         // Process attributes, collecting class values separately
         for (elem.attributes) |attr| {
             if (std.mem.eql(u8, attr.name, "class")) {
-                // Handle class attribute - may be array literal
+                // Handle class attribute - may be array literal or expression
                 if (attr.value) |value| {
-                    var evaluated = try self.evaluateString(value);
+                    var evaluated: []const u8 = undefined;
 
-                    // Parse array literal to space-separated string
-                    if (evaluated.len > 0 and evaluated[0] == '[') {
-                        evaluated = try parseArrayToSpaceSeparated(self.allocator, evaluated);
+                    // Check if it's an array literal
+                    if (value.len >= 1 and value[0] == '[') {
+                        evaluated = try parseArrayToSpaceSeparated(self.allocator, value);
+                    } else {
+                        // Evaluate as expression (handles "str" + var concatenation)
+                        const expr_value = self.evaluateExpression(value);
+                        evaluated = try expr_value.toString(self.allocator);
                     }
 
                     if (evaluated.len > 0) {
@@ -716,7 +726,19 @@ pub const Runtime = struct {
     }
 
     fn visitMixinCall(self: *Runtime, call: ast.MixinCall) Error!void {
-        const mixin = self.context.getMixin(call.name) orelse return;
+        // First check if mixin is defined in current context (same template or preloaded)
+        var mixin = self.context.getMixin(call.name);
+
+        // If not found and mixins_dir is configured, try loading from mixins directory
+        if (mixin == null and self.mixins_dir.len > 0) {
+            if (self.loadMixinFromDir(call.name)) |loaded_mixin| {
+                try self.context.defineMixin(loaded_mixin);
+                mixin = loaded_mixin;
+            }
+        }
+
+        // If still not found, skip this mixin call
+        const mixin_def = mixin orelse return;
 
         try self.context.pushScope();
         defer self.context.popScope();
@@ -751,17 +773,17 @@ pub const Runtime = struct {
         }
 
         // Bind arguments to parameters
-        const regular_params = if (mixin.has_rest and mixin.params.len > 0)
-            mixin.params.len - 1
+        const regular_params = if (mixin_def.has_rest and mixin_def.params.len > 0)
+            mixin_def.params.len - 1
         else
-            mixin.params.len;
+            mixin_def.params.len;
 
         // Bind regular parameters
-        for (mixin.params[0..regular_params], 0..) |param, i| {
+        for (mixin_def.params[0..regular_params], 0..) |param, i| {
             const value = if (i < call.args.len)
                 self.evaluateExpression(call.args[i])
-            else if (i < mixin.defaults.len and mixin.defaults[i] != null)
-                self.evaluateExpression(mixin.defaults[i].?)
+            else if (i < mixin_def.defaults.len and mixin_def.defaults[i] != null)
+                self.evaluateExpression(mixin_def.defaults[i].?)
             else
                 Value.null;
 
@@ -769,8 +791,8 @@ pub const Runtime = struct {
         }
 
         // Bind rest parameter if present
-        if (mixin.has_rest and mixin.params.len > 0) {
-            const rest_param = mixin.params[mixin.params.len - 1];
+        if (mixin_def.has_rest and mixin_def.params.len > 0) {
+            const rest_param = mixin_def.params[mixin_def.params.len - 1];
             const rest_start = regular_params;
 
             if (rest_start < call.args.len) {
@@ -789,9 +811,77 @@ pub const Runtime = struct {
         }
 
         // Render mixin body
-        for (mixin.children) |child| {
+        for (mixin_def.children) |child| {
             try self.visitNode(child);
         }
+    }
+
+    /// Loads a mixin from the mixins directory by name.
+    /// Searches for files named {name}.pug or iterates through all .pug files.
+    /// Note: The source file memory is intentionally not freed to keep AST slices valid.
+    fn loadMixinFromDir(self: *Runtime, name: []const u8) ?ast.MixinDef {
+        const resolver = self.file_resolver orelse return null;
+
+        // First try: look for a file named {name}.pug
+        const specific_path = std.fs.path.join(self.allocator, &.{ self.mixins_dir, name }) catch return null;
+        defer self.allocator.free(specific_path);
+
+        const with_ext = std.fmt.allocPrint(self.allocator, "{s}.pug", .{specific_path}) catch return null;
+        defer self.allocator.free(with_ext);
+
+        if (resolver(self.allocator, with_ext)) |source| {
+            // Note: source is intentionally not freed - AST nodes contain slices into it
+            if (self.parseMixinFromSource(source, name)) |mixin_def| {
+                return mixin_def;
+            }
+            // Only free if we didn't find the mixin we wanted
+            self.allocator.free(source);
+        }
+
+        // Second try: iterate through all .pug files in mixins directory
+        var dir = std.fs.openDirAbsolute(self.mixins_dir, .{ .iterate = true }) catch return null;
+        defer dir.close();
+
+        var iter = dir.iterate();
+        while (iter.next() catch return null) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".pug")) continue;
+
+            const file_path = std.fs.path.join(self.allocator, &.{ self.mixins_dir, entry.name }) catch continue;
+            defer self.allocator.free(file_path);
+
+            if (resolver(self.allocator, file_path)) |source| {
+                // Note: source is intentionally not freed - AST nodes contain slices into it
+                if (self.parseMixinFromSource(source, name)) |mixin_def| {
+                    return mixin_def;
+                }
+                // Only free if we didn't find the mixin we wanted
+                self.allocator.free(source);
+            }
+        }
+
+        return null;
+    }
+
+    /// Parses a source file and extracts a mixin definition by name.
+    fn parseMixinFromSource(self: *Runtime, source: []const u8, name: []const u8) ?ast.MixinDef {
+        var lexer = Lexer.init(self.allocator, source);
+        const tokens = lexer.tokenize() catch return null;
+        // Note: lexer is not deinitialized - tokens contain slices into source
+
+        var parser = Parser.init(self.allocator, tokens);
+        const doc = parser.parse() catch return null;
+
+        // Find the mixin definition with the matching name
+        for (doc.nodes) |node| {
+            if (node == .mixin_def) {
+                if (std.mem.eql(u8, node.mixin_def.name, name)) {
+                    return node.mixin_def;
+                }
+            }
+        }
+
+        return null;
     }
 
     /// Renders the mixin block content (for `block` keyword inside mixins).

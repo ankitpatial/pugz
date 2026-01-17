@@ -2,8 +2,12 @@
 //!
 //! Provides a simple API for rendering Pug templates with:
 //! - Views directory configuration
-//! - Auto-loading mixins from a mixins subdirectory
+//! - Lazy-loading mixins from a mixins subdirectory (on-demand)
 //! - Relative path resolution for includes and extends
+//!
+//! Mixins are resolved in the following order:
+//! 1. Mixins defined in the same template file
+//! 2. Mixins from the mixins directory (lazy-loaded when first called)
 //!
 //! Example:
 //! ```zig
@@ -32,7 +36,8 @@ pub const Options = struct {
     /// Root directory containing view templates.
     views_dir: []const u8,
     /// Subdirectory within views_dir containing mixin files.
-    /// Defaults to "mixins". Set to null to disable auto-loading.
+    /// Defaults to "mixins". Mixins are lazy-loaded on first use.
+    /// Set to null to disable mixin directory lookup.
     mixins_dir: ?[]const u8 = "mixins",
     /// File extension for templates. Defaults to ".pug".
     extension: []const u8 = ".pug",
@@ -49,107 +54,41 @@ pub const ViewEngineError = error{
     InvalidPath,
 };
 
-/// A pre-parsed mixin definition.
-const MixinEntry = struct {
-    name: []const u8,
-    def: ast.MixinDef,
-};
-
 /// ViewEngine manages template rendering with a configured views directory.
+/// Mixins are lazy-loaded from the mixins directory when first called.
 pub const ViewEngine = struct {
     allocator: std.mem.Allocator,
     options: Options,
     /// Absolute path to views directory.
     views_path: []const u8,
-    /// Pre-loaded mixin definitions.
-    mixins: std.ArrayListUnmanaged(MixinEntry),
-    /// Cached mixin source files (to keep slices valid).
-    mixin_sources: std.ArrayListUnmanaged([]const u8),
+    /// Absolute path to mixins directory (resolved at init).
+    mixins_path: []const u8,
 
     /// Initializes the ViewEngine with the given options.
-    /// Loads all mixins from the mixins directory if configured.
     pub fn init(allocator: std.mem.Allocator, options: Options) !ViewEngine {
         // Resolve views directory to absolute path
         const views_path = try std.fs.cwd().realpathAlloc(allocator, options.views_dir);
         errdefer allocator.free(views_path);
 
-        var engine = ViewEngine{
+        // Resolve mixins directory path (may not exist yet)
+        var mixins_path: []const u8 = "";
+        if (options.mixins_dir) |mixins_subdir| {
+            mixins_path = try std.fs.path.join(allocator, &.{ views_path, mixins_subdir });
+        }
+
+        return ViewEngine{
             .allocator = allocator,
             .options = options,
             .views_path = views_path,
-            .mixins = .empty,
-            .mixin_sources = .empty,
+            .mixins_path = mixins_path,
         };
-
-        // Auto-load mixins if configured
-        if (options.mixins_dir) |mixins_subdir| {
-            try engine.loadMixins(mixins_subdir);
-        }
-
-        return engine;
     }
 
     /// Releases all resources held by the ViewEngine.
     pub fn deinit(self: *ViewEngine) void {
         self.allocator.free(self.views_path);
-        self.mixins.deinit(self.allocator);
-        for (self.mixin_sources.items) |source| {
-            self.allocator.free(source);
-        }
-        self.mixin_sources.deinit(self.allocator);
-    }
-
-    /// Loads all mixin files from the specified subdirectory.
-    fn loadMixins(self: *ViewEngine, mixins_subdir: []const u8) !void {
-        const mixins_path = try std.fs.path.join(self.allocator, &.{ self.views_path, mixins_subdir });
-        defer self.allocator.free(mixins_path);
-
-        var dir = std.fs.openDirAbsolute(mixins_path, .{ .iterate = true }) catch |err| {
-            if (err == error.FileNotFound) {
-                // Mixins directory doesn't exist - that's OK
-                return;
-            }
-            return err;
-        };
-        defer dir.close();
-
-        var iter = dir.iterate();
-        while (try iter.next()) |entry| {
-            if (entry.kind != .file) continue;
-
-            // Check for .pug extension
-            if (!std.mem.endsWith(u8, entry.name, self.options.extension)) continue;
-
-            // Read and parse the mixin file
-            try self.loadMixinFile(dir, entry.name);
-        }
-    }
-
-    /// Loads a single mixin file and extracts its mixin definitions.
-    fn loadMixinFile(self: *ViewEngine, dir: std.fs.Dir, filename: []const u8) !void {
-        const source = try dir.readFileAlloc(self.allocator, filename, 1024 * 1024);
-        errdefer self.allocator.free(source);
-
-        // Keep source alive for string slices
-        try self.mixin_sources.append(self.allocator, source);
-
-        // Parse the file
-        var lexer = Lexer.init(self.allocator, source);
-        defer lexer.deinit();
-
-        const tokens = lexer.tokenize() catch return;
-
-        var parser = Parser.init(self.allocator, tokens);
-        const doc = parser.parse() catch return;
-
-        // Extract mixin definitions
-        for (doc.nodes) |node| {
-            if (node == .mixin_def) {
-                try self.mixins.append(self.allocator, .{
-                    .name = node.mixin_def.name,
-                    .def = node.mixin_def,
-                });
-            }
+        if (self.mixins_path.len > 0) {
+            self.allocator.free(self.mixins_path);
         }
     }
 
@@ -157,6 +96,10 @@ pub const ViewEngine = struct {
     ///
     /// The template path is relative to the views directory.
     /// The .pug extension is added automatically if not present.
+    ///
+    /// Mixins are resolved in order:
+    /// 1. Mixins defined in the template itself
+    /// 2. Mixins from the mixins directory (lazy-loaded)
     ///
     /// Example:
     /// ```zig
@@ -188,11 +131,6 @@ pub const ViewEngine = struct {
         var ctx = Context.init(allocator);
         defer ctx.deinit();
 
-        // Register pre-loaded mixins
-        for (self.mixins.items) |mixin_entry| {
-            try ctx.defineMixin(mixin_entry.def);
-        }
-
         // Populate context from data struct
         try ctx.pushScope();
         inline for (std.meta.fields(@TypeOf(data))) |field| {
@@ -200,10 +138,11 @@ pub const ViewEngine = struct {
             try ctx.set(field.name, runtime.toValue(allocator, value));
         }
 
-        // Create runtime with file resolver for includes/extends
+        // Create runtime with file resolver for includes/extends and lazy mixin loading
         var rt = Runtime.init(allocator, &ctx, .{
             .pretty = self.options.pretty,
             .base_dir = self.views_path,
+            .mixins_dir = self.mixins_path,
             .file_resolver = createFileResolver(),
         });
         defer rt.deinit();

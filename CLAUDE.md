@@ -252,7 +252,7 @@ const pugz = @import("pugz");
 // Initialize once at server startup
 var engine = try pugz.ViewEngine.init(allocator, .{
     .views_dir = "src/views",     // Root views directory
-    .mixins_dir = "mixins",       // Auto-load mixins from views/mixins/ (optional)
+    .mixins_dir = "mixins",       // Mixins dir for lazy-loading (optional, default: "mixins")
     .extension = ".pug",          // File extension (default: .pug)
     .pretty = true,               // Pretty-print output (default: true)
 });
@@ -271,11 +271,22 @@ pub fn handleRequest(engine: *pugz.ViewEngine, allocator: std.mem.Allocator) ![]
 }
 ```
 
+### Mixin Resolution (Lazy Loading)
+
+Mixins are resolved in the following order:
+1. **Same template** - Mixins defined in the current template file
+2. **Mixins directory** - If not found, searches `views/mixins/*.pug` files (lazy-loaded on first use)
+
+This lazy-loading approach means:
+- Mixins are only parsed when first called
+- No upfront loading of all mixin files at server startup
+- Templates can override mixins from the mixins directory by defining them locally
+
 ### Directory Structure
 
 ```
 src/views/
-├── mixins/           # Auto-loaded mixins (optional)
+├── mixins/           # Lazy-loaded mixins (searched when mixin not found in template)
 │   ├── buttons.pug   # mixin btn(text), mixin btn-link(href, text)
 │   └── cards.pug     # mixin card(title), mixin card-simple(title, body)
 ├── layouts/
@@ -291,7 +302,7 @@ src/views/
 Templates can use:
 - `extends layouts/base` - Paths relative to views_dir
 - `include partials/header` - Paths relative to views_dir
-- `+btn("Click")` - Mixins from mixins/ dir available automatically
+- `+btn("Click")` - Mixins from mixins/ dir loaded on-demand
 
 ### Low-Level API
 
