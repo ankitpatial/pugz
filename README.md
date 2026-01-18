@@ -15,20 +15,19 @@ A Pug template engine for Zig.
 
 ## Installation
 
-Add to `build.zig.zon`:
+Add pugz as a dependency in your `build.zig.zon`:
 
-```zig
-.dependencies = .{
-    .pugz = .{
-        .url = "git+https://github.com/ankitpatial/pugz",
-    },
-},
+```bash
+zig fetch --save "git+https://code.patial.tech/zig/pugz#main"
 ```
 
-Then in `build.zig`:
+Then in your `build.zig`, add the `pugz` module as a dependency:
 
 ```zig
-const pugz = b.dependency("pugz", .{});
+const pugz = b.dependency("pugz", .{
+    .target = target,
+    .optimize = optimize,
+});
 exe.root_module.addImport("pugz", pugz.module("pugz"));
 ```
 
@@ -117,6 +116,7 @@ html
 | Complex | 33.48 us | 29,872 | 4,852 bytes |
 
 ### Comparison Benchmarks (`zig build bench-2`)
+ref: https://github.com/itsarnaud/template-engine-bench
 
 2,000 iterations vs Pug.js:
 
