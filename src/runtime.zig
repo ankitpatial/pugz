@@ -765,8 +765,11 @@ pub const Runtime = struct {
             }
         }
 
-        // If still not found, skip this mixin call
-        const mixin_def = mixin orelse return;
+        // If still not found, log warning and skip this mixin call
+        const mixin_def = mixin orelse {
+            std.log.warn("mixin '{s}' not found, skipping", .{call.name});
+            return;
+        };
 
         try self.context.pushScope();
         defer self.context.popScope();
