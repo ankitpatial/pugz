@@ -26,6 +26,8 @@ const ast = @import("ast.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
 
+const log = std.log.scoped(.@"pugz/runtime");
+
 /// A value in the template context.
 pub const Value = union(enum) {
     /// Null/undefined value.
@@ -767,7 +769,7 @@ pub const Runtime = struct {
 
         // If still not found, log warning and skip this mixin call
         const mixin_def = mixin orelse {
-            std.log.warn("mixin '{s}' not found, skipping", .{call.name});
+            log.warn("skipping, mixin '{s}' not found", .{call.name});
             return;
         };
 
@@ -793,9 +795,13 @@ pub const Runtime = struct {
                 if (attr.value) |val| {
                     // Strip quotes from attribute value for the object
                     const clean_val = try self.evaluateString(val);
-                    attrs_obj.put(self.allocator, attr.name, Value.str(clean_val)) catch {};
+                    attrs_obj.put(self.allocator, attr.name, Value.str(clean_val)) catch |err| {
+                        log.warn("skipping attribute, failed to set '{s}': {}", .{ attr.name, err });
+                    };
                 } else {
-                    attrs_obj.put(self.allocator, attr.name, Value.boolean(true)) catch {};
+                    attrs_obj.put(self.allocator, attr.name, Value.boolean(true)) catch |err| {
+                        log.warn("skipping attribute, failed to set '{s}': {}", .{ attr.name, err });
+                    };
                 }
             }
             try self.context.set("attributes", .{ .object = attrs_obj });
@@ -854,10 +860,16 @@ pub const Runtime = struct {
         const resolver = self.file_resolver orelse return null;
 
         // First try: look for a file named {name}.pug
-        const specific_path = std.fs.path.join(self.allocator, &.{ self.mixins_dir, name }) catch return null;
+        const specific_path = std.fs.path.join(self.allocator, &.{ self.mixins_dir, name }) catch |err| {
+            log.warn("skipping mixin lookup, failed to join path for '{s}': {}", .{ name, err });
+            return null;
+        };
         defer self.allocator.free(specific_path);
 
-        const with_ext = std.fmt.allocPrint(self.allocator, "{s}.pug", .{specific_path}) catch return null;
+        const with_ext = std.fmt.allocPrint(self.allocator, "{s}.pug", .{specific_path}) catch |err| {
+            log.warn("skipping mixin lookup, failed to allocate path for '{s}': {}", .{ name, err });
+            return null;
+        };
         defer self.allocator.free(with_ext);
 
         if (resolver(self.allocator, with_ext)) |source| {
@@ -872,17 +884,29 @@ pub const Runtime = struct {
         // Second try: iterate through all .pug files in mixins directory
         // Use cwd().openDir for relative paths, openDirAbsolute for absolute paths
         var dir = if (std.fs.path.isAbsolute(self.mixins_dir))
-            std.fs.openDirAbsolute(self.mixins_dir, .{ .iterate = true }) catch return null
+            std.fs.openDirAbsolute(self.mixins_dir, .{ .iterate = true }) catch |err| {
+                log.warn("skipping mixins directory scan, failed to open '{s}': {}", .{ self.mixins_dir, err });
+                return null;
+            }
         else
-            std.fs.cwd().openDir(self.mixins_dir, .{ .iterate = true }) catch return null;
+            std.fs.cwd().openDir(self.mixins_dir, .{ .iterate = true }) catch |err| {
+                log.warn("skipping mixins directory scan, failed to open '{s}': {}", .{ self.mixins_dir, err });
+                return null;
+            };
         defer dir.close();
 
         var iter = dir.iterate();
-        while (iter.next() catch return null) |entry| {
+        while (iter.next() catch |err| {
+            log.warn("skipping mixins directory scan, iteration failed: {}", .{err});
+            return null;
+        }) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".pug")) continue;
 
-            const file_path = std.fs.path.join(self.allocator, &.{ self.mixins_dir, entry.name }) catch continue;
+            const file_path = std.fs.path.join(self.allocator, &.{ self.mixins_dir, entry.name }) catch |err| {
+                log.warn("skipping mixin file, failed to join path for '{s}': {}", .{ entry.name, err });
+                continue;
+            };
             defer self.allocator.free(file_path);
 
             if (resolver(self.allocator, file_path)) |source| {
@@ -901,11 +925,17 @@ pub const Runtime = struct {
     /// Parses a source file and extracts a mixin definition by name.
     fn parseMixinFromSource(self: *Runtime, source: []const u8, name: []const u8) ?ast.MixinDef {
         var lexer = Lexer.init(self.allocator, source);
-        const tokens = lexer.tokenize() catch return null;
+        const tokens = lexer.tokenize() catch |err| {
+            log.warn("skipping mixin file, tokenize failed for '{s}': {}", .{ name, err });
+            return null;
+        };
         // Note: lexer is not deinitialized - tokens contain slices into source
 
         var parser = Parser.init(self.allocator, tokens);
-        const doc = parser.parse() catch return null;
+        const doc = parser.parse() catch |err| {
+            log.warn("skipping mixin file, parse failed for '{s}': {}", .{ name, err });
+            return null;
+        };
 
         // Find the mixin definition with the matching name
         for (doc.nodes) |node| {
