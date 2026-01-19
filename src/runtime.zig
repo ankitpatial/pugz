@@ -867,7 +867,11 @@ pub const Runtime = struct {
         }
 
         // Second try: iterate through all .pug files in mixins directory
-        var dir = std.fs.openDirAbsolute(self.mixins_dir, .{ .iterate = true }) catch return null;
+        // Use cwd().openDir for relative paths, openDirAbsolute for absolute paths
+        var dir = if (std.fs.path.isAbsolute(self.mixins_dir))
+            std.fs.openDirAbsolute(self.mixins_dir, .{ .iterate = true }) catch return null
+        else
+            std.fs.cwd().openDir(self.mixins_dir, .{ .iterate = true }) catch return null;
         defer dir.close();
 
         var iter = dir.iterate();
