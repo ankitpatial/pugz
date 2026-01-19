@@ -33,6 +33,8 @@ exe.root_module.addImport("pugz", pugz.module("pugz"));
 
 ## Usage
 
+**Important:** Always use an arena allocator for rendering. The render function creates many small allocations that should be freed together. Using a general-purpose allocator without freeing will cause memory leaks.
+
 ```zig
 const std = @import("std");
 const pugz = @import("pugz");
@@ -51,6 +53,25 @@ pub fn main() !void {
     });
 
     std.debug.print("{s}\n", .{html});
+}
+```
+
+### With http.zig
+
+When using with http.zig, use `res.arena` which is automatically freed after each response:
+
+```zig
+fn handler(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
+    const html = app.view.render(res.arena, "index", .{
+        .title = "Hello",
+    }) catch |err| {
+        res.status = 500;
+        res.body = @errorName(err);
+        return;
+    };
+
+    res.content_type = .HTML;
+    res.body = html;
 }
 ```
 

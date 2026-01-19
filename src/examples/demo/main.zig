@@ -75,7 +75,8 @@ pub fn main() !void {
 
 /// Handler for GET /
 fn index(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(app.allocator, "index", .{
+    // Use res.arena - memory is automatically freed after response is sent
+    const html = app.view.render(res.arena, "index", .{
         .title = "Home",
         .authenticated = true,
     }) catch |err| {
@@ -90,7 +91,7 @@ fn index(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
 
 /// Handler for GET /page-a - demonstrates extends and block override
 fn pageA(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(app.allocator, "page-a", .{
+    const html = app.view.render(res.arena, "page-a", .{
         .title = "Page A - Pets",
         .items = &[_][]const u8{ "A", "B", "C" },
         .n = 0,
@@ -106,7 +107,7 @@ fn pageA(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
 
 /// Handler for GET /page-b - demonstrates sub-layout inheritance
 fn pageB(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(app.allocator, "page-b", .{
+    const html = app.view.render(res.arena, "page-b", .{
         .title = "Page B - Sub Layout",
     }) catch |err| {
         res.status = 500;
@@ -120,7 +121,7 @@ fn pageB(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
 
 /// Handler for GET /append - demonstrates block append
 fn pageAppend(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(app.allocator, "page-append", .{
+    const html = app.view.render(res.arena, "page-append", .{
         .title = "Page Append",
     }) catch |err| {
         res.status = 500;
@@ -134,7 +135,7 @@ fn pageAppend(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
 
 /// Handler for GET /append-opt - demonstrates optional block keyword
 fn pageAppendOptional(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(app.allocator, "page-appen-optional-blk", .{
+    const html = app.view.render(res.arena, "page-appen-optional-blk", .{
         .title = "Page Append Optional",
     }) catch |err| {
         res.status = 500;
