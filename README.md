@@ -18,8 +18,11 @@ A Pug template engine for Zig.
 Add pugz as a dependency in your `build.zig.zon`:
 
 ```bash
-zig fetch --save "git+https://code.patial.tech/zig/pugz#main"
+zig fetch --save "git+https://github.com/ankitpatial/pugz#main"
 ```
+
+> **Note:** The primary repository is hosted at `code.patial.tech`. GitHub is a mirror. For dependencies, prefer the GitHub mirror for better availability.
+
 
 Then in your `build.zig`, add the `pugz` module as a dependency:
 
