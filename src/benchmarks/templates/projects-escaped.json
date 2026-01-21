@@ -1,0 +1,41 @@
+{
+  "title": "Projects",
+  "text": "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>",
+  "projects": [
+    {
+      "name": "<strong>Facebook</strong>",
+      "url": "http://facebook.com",
+      "description": "Social network"
+    },
+    {
+      "name": "<strong>Google</strong>",
+      "url": "http://google.com",
+      "description": "Search engine"
+    },
+    {
+      "name": "<strong>Twitter</strong>",
+      "url": "http://twitter.com",
+      "description": "Microblogging service"
+    },
+    {
+      "name": "<strong>Amazon</strong>",
+      "url": "http://amazon.com",
+      "description": "Online retailer"
+    },
+    {
+      "name": "<strong>eBay</strong>",
+      "url": "http://ebay.com",
+      "description": "Online auction"
+    },
+    {
+      "name": "<strong>Wikipedia</strong>",
+      "url": "http://wikipedia.org",
+      "description": "A free encyclopedia"
+    },
+    {
+      "name": "<strong>LiveJournal</strong>",
+      "url": "http://livejournal.com",
+      "description": "Blogging platform"
+    }
+  ]
+}

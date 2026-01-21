@@ -1,0 +1,12 @@
+{
+  "name": "pugjs-benchmark",
+  "version": "1.0.0",
+  "description": "Pug.js benchmark for comparison with Pugz",
+  "main": "bench.js",
+  "scripts": {
+    "bench": "node bench.js"
+  },
+  "dependencies": {
+    "pug": "^3.0.3"
+  }
+}
