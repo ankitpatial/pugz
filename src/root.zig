@@ -55,6 +55,11 @@ pub const renderTemplate = runtime.renderTemplate;
 
 // High-level API
 pub const ViewEngine = view_engine.ViewEngine;
+pub const CompiledTemplate = view_engine.CompiledTemplate;
+
+// Build-time template compilation
+pub const build_templates = @import("build_templates.zig");
+pub const compileTemplates = build_templates.compileTemplates;
 
 test {
     _ = @import("std").testing.refAllDecls(@This());

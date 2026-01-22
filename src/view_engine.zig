@@ -4,12 +4,13 @@
 //! - Views directory configuration
 //! - Lazy-loading mixins from a mixins subdirectory (on-demand)
 //! - Relative path resolution for includes and extends
+//! - **Compiled templates** for maximum performance (parse once, render many)
 //!
 //! Mixins are resolved in the following order:
 //! 1. Mixins defined in the same template file
 //! 2. Mixins from the mixins directory (lazy-loaded when first called)
 //!
-//! Example:
+//! ## Basic Usage
 //! ```zig
 //! const engine = ViewEngine.init(.{
 //!     .views_dir = "src/views",
@@ -23,6 +24,19 @@
 //! const tpl = "h1 #{title}";
 //! const out = try engine.renderTpl(allocator, tpl, .{ .title = "Hello" });
 //! defer allocator.free(out);
+//! ```
+//!
+//! ## Compiled Templates (High Performance)
+//! For maximum performance, compile templates once and render many times:
+//! ```zig
+//! // At startup: compile template (keeps AST in memory)
+//! var compiled = try CompiledTemplate.init(gpa, "h1 Hello, #{name}!");
+//! defer compiled.deinit();
+//!
+//! // Per request: render with arena (fast, zero parsing overhead)
+//! var arena = std.heap.ArenaAllocator.init(gpa);
+//! defer arena.deinit();
+//! const html = try compiled.render(arena.allocator(), .{ .name = "World" });
 //! ```
 
 const std = @import("std");
@@ -173,10 +187,193 @@ pub const ViewEngine = struct {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CompiledTemplate - Parse once, render many times
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ast = @import("ast.zig");
+
+/// A pre-compiled template that can be rendered multiple times with different data.
+/// This is the fastest way to render templates - parsing happens once at startup,
+/// and each render only needs to evaluate the AST with new data.
+///
+/// Memory layout:
+/// - The CompiledTemplate owns an arena that holds all AST nodes and source strings
+/// - Call render() with a per-request arena allocator for output
+/// - Call deinit() when the template is no longer needed
+///
+/// Example:
+/// ```zig
+/// // Compile once at startup
+/// var tpl = try CompiledTemplate.init(gpa, "h1 Hello, #{name}!");
+/// defer tpl.deinit();
+///
+/// // Render many times with different data
+/// for (requests) |req| {
+///     var arena = std.heap.ArenaAllocator.init(gpa);
+///     defer arena.deinit();
+///     const html = try tpl.render(arena.allocator(), .{ .name = req.name });
+///     // send html...
+/// }
+/// ```
+pub const CompiledTemplate = struct {
+    /// Arena holding all compiled template data (AST, source slices)
+    arena: std.heap.ArenaAllocator,
+    /// The parsed document AST
+    doc: ast.Document,
+    /// Runtime options
+    options: RenderOptions,
+
+    pub const RenderOptions = struct {
+        pretty: bool = true,
+        base_dir: []const u8 = ".",
+        mixins_dir: []const u8 = "",
+    };
+
+    /// Compiles a template string into a reusable CompiledTemplate.
+    /// The backing_allocator is used for the internal arena that holds the AST.
+    pub fn init(backing_allocator: std.mem.Allocator, source: []const u8) !CompiledTemplate {
+        return initWithOptions(backing_allocator, source, .{});
+    }
+
+    /// Compiles a template with custom options.
+    pub fn initWithOptions(backing_allocator: std.mem.Allocator, source: []const u8, options: RenderOptions) !CompiledTemplate {
+        var arena = std.heap.ArenaAllocator.init(backing_allocator);
+        errdefer arena.deinit();
+
+        const alloc = arena.allocator();
+
+        // Copy source into arena (AST slices point into it)
+        const owned_source = try alloc.dupe(u8, source);
+
+        // Tokenize
+        var lexer = Lexer.init(alloc, owned_source);
+        // Don't deinit lexer - arena owns all memory
+        const tokens = lexer.tokenize() catch return ViewEngineError.ParseError;
+
+        // Parse
+        var parser = Parser.init(alloc, tokens);
+        const doc = parser.parse() catch return ViewEngineError.ParseError;
+
+        return .{
+            .arena = arena,
+            .doc = doc,
+            .options = options,
+        };
+    }
+
+    /// Compiles a template from a file.
+    pub fn initFromFile(backing_allocator: std.mem.Allocator, path: []const u8, options: RenderOptions) !CompiledTemplate {
+        const source = std.fs.cwd().readFileAlloc(backing_allocator, path, 5 * 1024 * 1024) catch {
+            return ViewEngineError.TemplateNotFound;
+        };
+        defer backing_allocator.free(source);
+
+        return initWithOptions(backing_allocator, source, options);
+    }
+
+    /// Releases all memory used by the compiled template.
+    pub fn deinit(self: *CompiledTemplate) void {
+        self.arena.deinit();
+    }
+
+    /// Renders the compiled template with the given data.
+    /// Use a per-request arena allocator for best performance.
+    pub fn render(self: *const CompiledTemplate, allocator: std.mem.Allocator, data: anytype) ![]u8 {
+        // Create context with data
+        var ctx = Context.init(allocator);
+        defer ctx.deinit();
+
+        // Populate context from data struct
+        try ctx.pushScope();
+        inline for (std.meta.fields(@TypeOf(data))) |field| {
+            const value = @field(data, field.name);
+            try ctx.set(field.name, runtime.toValue(allocator, value));
+        }
+
+        // Create runtime
+        var rt = Runtime.init(allocator, &ctx, .{
+            .pretty = self.options.pretty,
+            .base_dir = self.options.base_dir,
+            .mixins_dir = self.options.mixins_dir,
+            .file_resolver = null,
+        });
+        defer rt.deinit();
+
+        return rt.renderOwned(self.doc);
+    }
+
+    /// Renders with a pre-converted Value context (avoids toValue overhead).
+    pub fn renderWithValue(self: *const CompiledTemplate, allocator: std.mem.Allocator, data: runtime.Value) ![]u8 {
+        var ctx = Context.init(allocator);
+        defer ctx.deinit();
+
+        // Populate context from Value object
+        try ctx.pushScope();
+        switch (data) {
+            .object => |obj| {
+                var iter = obj.iterator();
+                while (iter.next()) |entry| {
+                    try ctx.set(entry.key_ptr.*, entry.value_ptr.*);
+                }
+            },
+            else => {},
+        }
+
+        var rt = Runtime.init(allocator, &ctx, .{
+            .pretty = self.options.pretty,
+            .base_dir = self.options.base_dir,
+            .mixins_dir = self.options.mixins_dir,
+            .file_resolver = null,
+        });
+        defer rt.deinit();
+
+        return rt.renderOwned(self.doc);
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
 test "ViewEngine resolves paths correctly" {
     // This test requires a views directory - skip in unit tests
     // Full integration tests are in src/tests/
+}
+
+test "CompiledTemplate basic usage" {
+    const allocator = std.testing.allocator;
+
+    var tpl = try CompiledTemplate.init(allocator, "h1 Hello, #{name}!");
+    defer tpl.deinit();
+
+    // Render multiple times
+    for (0..3) |_| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const html = try tpl.render(arena.allocator(), .{ .name = "World" });
+        try std.testing.expectEqualStrings("<h1>Hello, World!</h1>\n", html);
+    }
+}
+
+test "CompiledTemplate with loop" {
+    const allocator = std.testing.allocator;
+
+    var tpl = try CompiledTemplate.init(allocator,
+        \\ul
+        \\  each item in items
+        \\    li= item
+    );
+    defer tpl.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const html = try tpl.render(arena.allocator(), .{
+        .items = &[_][]const u8{ "a", "b", "c" },
+    });
+
+    try std.testing.expect(std.mem.indexOf(u8, html, "<li>a</li>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<li>b</li>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<li>c</li>") != null);
 }

@@ -14,6 +14,27 @@ test "Simple interpolation" {
     );
 }
 
+test "Interpolation only as text" {
+    try expectOutput(
+        "h1.header #{header}",
+        .{ .header = "MyHeader" },
+        "<h1 class=\"header\">MyHeader</h1>",
+    );
+}
+
+test "Interpolation in each loop" {
+    try expectOutput(
+        \\ul.list
+        \\  each item in list
+        \\    li.item #{item}
+    , .{ .list = &[_][]const u8{ "a", "b" } },
+        \\<ul class="list">
+        \\  <li class="item">a</li>
+        \\  <li class="item">b</li>
+        \\</ul>
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test Case 2: Attributes with inline text
 // ─────────────────────────────────────────────────────────────────────────────
@@ -737,4 +758,3 @@ test "Mixin with string concatenation in class" {
         \\<button class="btn btn-secondary">Click me</button>
     );
 }
-

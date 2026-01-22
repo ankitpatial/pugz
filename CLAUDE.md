@@ -10,15 +10,23 @@ Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It implements Pug
 
 - `zig build` - Build the project (output in `zig-out/`)
 - `zig build test` - Run all tests
-- `zig build app-01` - Run the example web app (http://localhost:8080)
+- `zig build bench-compiled` - Run compiled templates benchmark (compare with Pug.js)
 
 ## Architecture Overview
 
-The template engine follows a classic compiler pipeline:
+The template engine supports two rendering modes:
 
+### 1. Runtime Rendering (Interpreted)
 ```
 Source → Lexer → Tokens → Parser → AST → Runtime → HTML
 ```
+
+### 2. Build-Time Compilation (Compiled)
+```
+Source → Lexer → Tokens → Parser → AST → build_templates.zig → generated.zig → Native Zig Code
+```
+
+The compiled mode is **~3x faster** than Pug.js.
 
 ### Core Modules
 
@@ -28,13 +36,93 @@ Source → Lexer → Tokens → Parser → AST → Runtime → HTML
 | **src/parser.zig** | Converts token stream into AST. Handles nesting via indent/dedent tokens. |
 | **src/ast.zig** | AST node definitions (Element, Text, Conditional, Each, Mixin, etc.) |
 | **src/runtime.zig** | Evaluates AST with data context, produces final HTML. Handles variable interpolation, conditionals, loops, mixins. |
-| **src/codegen.zig** | Static HTML generation (without runtime evaluation). Outputs placeholders for dynamic content. |
+| **src/build_templates.zig** | Build-time template compiler. Generates optimized Zig code from `.pug` templates. |
 | **src/view_engine.zig** | High-level ViewEngine for web servers. Manages views directory, auto-loads mixins. |
-| **src/root.zig** | Public library API - exports `ViewEngine`, `renderTemplate()` and core types. |
+| **src/root.zig** | Public library API - exports `ViewEngine`, `renderTemplate()`, `build_templates` and core types. |
 
 ### Test Files
 
 - **src/tests/general_test.zig** - Comprehensive integration tests for all features
+- **src/tests/doctype_test.zig** - Doctype-specific tests
+- **src/tests/inheritance_test.zig** - Template inheritance tests
+
+## Build-Time Template Compilation
+
+For maximum performance, templates can be compiled to native Zig code at build time.
+
+### Setup in build.zig
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const pugz_dep = b.dependency("pugz", .{});
+    
+    // Compile templates at build time
+    const build_templates = @import("pugz").build_templates;
+    const compiled_templates = build_templates.compileTemplates(b, .{
+        .source_dir = "views",  // Directory containing .pug files
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "myapp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .imports = &.{
+                .{ .name = "pugz", .module = pugz_dep.module("pugz") },
+                .{ .name = "tpls", .module = compiled_templates },
+            },
+        }),
+    });
+}
+```
+
+### Usage in Code
+
+```zig
+const tpls = @import("tpls");
+
+pub fn handleRequest(allocator: std.mem.Allocator) ![]u8 {
+    // Zero-cost template rendering - just native Zig code
+    return try tpls.home(allocator, .{
+        .title = "Welcome",
+        .user = .{ .name = "Alice", .email = "alice@example.com" },
+        .items = &[_][]const u8{ "One", "Two", "Three" },
+    });
+}
+```
+
+### Generated Code Features
+
+The compiler generates optimized Zig code with:
+- **Static string merging** - Consecutive static content merged into single `appendSlice` calls
+- **Zero allocation for static templates** - Returns string literal directly
+- **Type-safe data access** - Uses `@field(d, "name")` for compile-time checked field access
+- **Automatic type conversion** - `strVal()` helper converts integers to strings
+- **Optional handling** - Nullable slices handled with `orelse &.{}`
+- **HTML escaping** - Lookup table for fast character escaping
+
+### Benchmark Results (2000 iterations)
+
+| Template | Pug.js | Pugz | Speedup |
+|----------|--------|------|---------|
+| simple-0 | 0.8ms | 0.1ms | **8x** |
+| simple-1 | 1.4ms | 0.6ms | **2.3x** |
+| simple-2 | 1.8ms | 0.6ms | **3x** |
+| if-expression | 0.6ms | 0.2ms | **3x** |
+| projects-escaped | 4.4ms | 0.6ms | **7.3x** |
+| search-results | 15.2ms | 5.6ms | **2.7x** |
+| friends | 153.5ms | 54.0ms | **2.8x** |
+| **TOTAL** | **177.6ms** | **61.6ms** | **~3x faster** |
+
+Run benchmarks:
+```bash
+# Pugz (Zig)
+zig build bench-compiled
+
+# Pug.js (for comparison)
+cd src/benchmarks/pugjs && npm install && npm run bench
+```
 
 ## Memory Management
 
@@ -56,6 +144,8 @@ This pattern is recommended because template rendering creates many small alloca
 The lexer tracks several states for handling complex syntax:
 - `in_raw_block` / `raw_block_indent` / `raw_block_started` - For dot block text (e.g., `script.`)
 - `indent_stack` - Stack-based indent/dedent token generation
+
+**Important**: The lexer distinguishes between `#id` (ID selector), `#{expr}` (interpolation), and `#[tag]` (tag interpolation) by looking ahead at the next character.
 
 ### Token Types
 
@@ -125,6 +215,9 @@ p.
   Multi-line
   text block
 <p>Literal HTML</p>         // passed through as-is
+
+// Interpolation-only text works too
+h1.header #{title}          // renders <h1 class="header">Title Value</h1>
 ```
 
 ### Tag Interpolation
@@ -154,6 +247,10 @@ else
 
 unless loggedIn
   p Please login
+
+// String comparison in conditions
+if status == "active"
+  p Active
 ```
 
 ### Iteration
@@ -172,6 +269,12 @@ else
 // Works with objects too (key as index)
 each val, key in object
   p #{key}: #{val}
+
+// Nested iteration with field access
+each friend in friends
+  li #{friend.name}
+  each tag in friend.tags
+    span= tag
 ```
 
 ### Case/When
@@ -241,9 +344,13 @@ block prepend styles
 
 ## Server Usage
 
-### ViewEngine (Recommended)
+### Compiled Templates (Recommended for Production)
 
-The `ViewEngine` provides the simplest API for web servers:
+Use build-time compilation for best performance. See "Build-Time Template Compilation" section above.
+
+### ViewEngine (Runtime Rendering)
+
+The `ViewEngine` provides runtime template rendering with lazy-loading:
 
 ```zig
 const std = @import("std");
@@ -342,14 +449,16 @@ Run tests with `zig build test`. Tests cover:
 - Class and ID shorthand syntax
 - Attribute parsing (quoted, unquoted, boolean, object literals)
 - Text interpolation (escaped, unescaped, tag interpolation)
+- Interpolation-only text (e.g., `h1.class #{var}`)
 - Conditionals (if/else if/else/unless)
-- Iteration (each with index, else branch, objects)
+- Iteration (each with index, else branch, objects, nested loops)
 - Case/when statements
 - Mixin definitions and calls (with defaults, rest args, block content, attributes)
 - Plain text (piped, dot blocks, literal HTML)
 - Self-closing tags (void elements, explicit `/`)
 - Block expansion with colon
 - Comments (rendered and silent)
+- String comparison in conditions
 
 ## Error Handling
 
@@ -365,4 +474,4 @@ Potential areas for enhancement:
 - Filter support (`:markdown`, `:stylus`, etc.)
 - More complete JavaScript expression evaluation
 - Source maps for debugging
-- Compile-time template validation
+- Mixin support in compiled templates

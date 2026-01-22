@@ -1,0 +1,686 @@
+//! Pugz Build Step - Compile .pug templates to Zig code at build time.
+//!
+//! Generates a single `generated.zig` file in the views folder containing:
+//! - Shared helper functions (esc, truthy)
+//! - All compiled template render functions
+//!
+//! ## Usage in build.zig:
+//! ```zig
+//! const build_templates = @import("pugz").build_templates;
+//! const templates = build_templates.compileTemplates(b, .{
+//!     .source_dir = "views",
+//! });
+//! exe.root_module.addImport("templates", templates);
+//! ```
+//!
+//! ## Usage in code:
+//! ```zig
+//! const tpls = @import("templates");
+//! const html = try tpls.home(allocator, .{ .title = "Welcome" });
+//! ```
+
+const std = @import("std");
+const Lexer = @import("lexer.zig").Lexer;
+const Parser = @import("parser.zig").Parser;
+const ast = @import("ast.zig");
+
+pub const Options = struct {
+    source_dir: []const u8 = "views",
+    extension: []const u8 = ".pug",
+};
+
+pub fn compileTemplates(b: *std.Build, options: Options) *std.Build.Module {
+    const gen_step = TemplateGenStep.create(b, options);
+    return b.createModule(.{
+        .root_source_file = gen_step.getOutput(),
+    });
+}
+
+const TemplateGenStep = struct {
+    step: std.Build.Step,
+    options: Options,
+    generated_file: std.Build.GeneratedFile,
+
+    fn create(b: *std.Build, options: Options) *TemplateGenStep {
+        const self = b.allocator.create(TemplateGenStep) catch @panic("OOM");
+        self.* = .{
+            .step = std.Build.Step.init(.{
+                .id = .custom,
+                .name = "pugz-compile-templates",
+                .owner = b,
+                .makeFn = make,
+            }),
+            .options = options,
+            .generated_file = .{ .step = &self.step },
+        };
+        return self;
+    }
+
+    fn getOutput(self: *TemplateGenStep) std.Build.LazyPath {
+        return .{ .generated = .{ .file = &self.generated_file } };
+    }
+
+    fn make(step: *std.Build.Step, _: std.Build.Step.MakeOptions) !void {
+        const self: *TemplateGenStep = @fieldParentPtr("step", step);
+        const b = step.owner;
+        const allocator = b.allocator;
+
+        var templates = std.ArrayListUnmanaged(TemplateInfo){};
+        defer templates.deinit(allocator);
+        try findTemplates(allocator, self.options.source_dir, "", self.options.extension, &templates);
+
+        const out_path = try std.fs.path.join(allocator, &.{ self.options.source_dir, "generated.zig" });
+        try generateSingleFile(allocator, self.options.source_dir, out_path, templates.items);
+
+        self.generated_file.path = out_path;
+    }
+};
+
+const TemplateInfo = struct {
+    rel_path: []const u8,
+    zig_name: []const u8,
+};
+
+fn findTemplates(
+    allocator: std.mem.Allocator,
+    base_dir: []const u8,
+    sub_path: []const u8,
+    extension: []const u8,
+    templates: *std.ArrayListUnmanaged(TemplateInfo),
+) !void {
+    const full_path = if (sub_path.len > 0)
+        try std.fs.path.join(allocator, &.{ base_dir, sub_path })
+    else
+        try allocator.dupe(u8, base_dir);
+    defer allocator.free(full_path);
+
+    var dir = std.fs.cwd().openDir(full_path, .{ .iterate = true }) catch |err| {
+        std.log.warn("Cannot open directory {s}: {}", .{ full_path, err });
+        return;
+    };
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        const name = try allocator.dupe(u8, entry.name);
+
+        if (entry.kind == .directory) {
+            const new_sub = if (sub_path.len > 0)
+                try std.fs.path.join(allocator, &.{ sub_path, name })
+            else
+                name;
+            try findTemplates(allocator, base_dir, new_sub, extension, templates);
+        } else if (entry.kind == .file and std.mem.endsWith(u8, name, extension)) {
+            const rel_path = if (sub_path.len > 0)
+                try std.fs.path.join(allocator, &.{ sub_path, name })
+            else
+                name;
+
+            const without_ext = rel_path[0 .. rel_path.len - extension.len];
+            const zig_name = try pathToIdent(allocator, without_ext);
+
+            try templates.append(allocator, .{
+                .rel_path = rel_path,
+                .zig_name = zig_name,
+            });
+        }
+    }
+}
+
+fn pathToIdent(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var result = try allocator.alloc(u8, path.len);
+    for (path, 0..) |c, i| {
+        result[i] = switch (c) {
+            '/', '\\', '-', '.' => '_',
+            else => c,
+        };
+    }
+    return result;
+}
+
+fn generateSingleFile(
+    allocator: std.mem.Allocator,
+    source_dir: []const u8,
+    out_path: []const u8,
+    templates: []const TemplateInfo,
+) !void {
+    var out = std.ArrayListUnmanaged(u8){};
+    defer out.deinit(allocator);
+
+    const w = out.writer(allocator);
+
+    // Header
+    try w.writeAll(
+        \\//! Auto-generated by pugz.compileTemplates()
+        \\//! Do not edit manually - regenerate by running: zig build
+        \\
+        \\const std = @import("std");
+        \\const Allocator = std.mem.Allocator;
+        \\const ArrayList = std.ArrayList(u8);
+        \\
+        \\// ─────────────────────────────────────────────────────────────────────────────
+        \\// Helpers
+        \\// ─────────────────────────────────────────────────────────────────────────────
+        \\
+        \\const esc_lut: [256]?[]const u8 = blk: {
+        \\    var t: [256]?[]const u8 = .{null} ** 256;
+        \\    t['&'] = "&amp;";
+        \\    t['<'] = "&lt;";
+        \\    t['>'] = "&gt;";
+        \\    t['"'] = "&quot;";
+        \\    t['\''] = "&#x27;";
+        \\    break :blk t;
+        \\};
+        \\
+        \\fn esc(o: *ArrayList, a: Allocator, s: []const u8) Allocator.Error!void {
+        \\    var i: usize = 0;
+        \\    for (s, 0..) |c, j| {
+        \\        if (esc_lut[c]) |e| {
+        \\            if (j > i) try o.appendSlice(a, s[i..j]);
+        \\            try o.appendSlice(a, e);
+        \\            i = j + 1;
+        \\        }
+        \\    }
+        \\    if (i < s.len) try o.appendSlice(a, s[i..]);
+        \\}
+        \\
+        \\fn truthy(v: anytype) bool {
+        \\    return switch (@typeInfo(@TypeOf(v))) {
+        \\        .bool => v,
+        \\        .optional => v != null,
+        \\        .pointer => |p| if (p.size == .slice) v.len > 0 else true,
+        \\        .int, .comptime_int => v != 0,
+        \\        else => true,
+        \\    };
+        \\}
+        \\
+        \\var int_buf: [32]u8 = undefined;
+        \\
+        \\fn strVal(v: anytype) []const u8 {
+        \\    const T = @TypeOf(v);
+        \\    return switch (@typeInfo(T)) {
+        \\        .pointer => |p| if (p.size == .slice) v else @compileError("unsupported pointer type"),
+        \\        .int, .comptime_int => std.fmt.bufPrint(&int_buf, "{d}", .{v}) catch "0",
+        \\        .optional => if (v) |val| strVal(val) else "",
+        \\        else => @compileError("strVal: unsupported type " ++ @typeName(T)),
+        \\    };
+        \\}
+        \\
+        \\// ─────────────────────────────────────────────────────────────────────────────
+        \\// Templates
+        \\// ─────────────────────────────────────────────────────────────────────────────
+        \\
+        \\
+    );
+
+    // Generate each template
+    for (templates) |tpl| {
+        const src_path = try std.fs.path.join(allocator, &.{ source_dir, tpl.rel_path });
+        defer allocator.free(src_path);
+
+        const source = std.fs.cwd().readFileAlloc(allocator, src_path, 5 * 1024 * 1024) catch |err| {
+            std.log.err("Failed to read {s}: {}", .{ src_path, err });
+            return err;
+        };
+        defer allocator.free(source);
+
+        try compileTemplate(allocator, w, tpl.zig_name, source);
+    }
+
+    // Template names list
+    try w.writeAll("pub const template_names = [_][]const u8{\n");
+    for (templates) |tpl| {
+        try w.print("    \"{s}\",\n", .{tpl.zig_name});
+    }
+    try w.writeAll("};\n");
+
+    const file = try std.fs.cwd().createFile(out_path, .{});
+    defer file.close();
+    try file.writeAll(out.items);
+}
+
+fn compileTemplate(
+    allocator: std.mem.Allocator,
+    w: std.ArrayListUnmanaged(u8).Writer,
+    name: []const u8,
+    source: []const u8,
+) !void {
+    var lexer = Lexer.init(allocator, source);
+    defer lexer.deinit();
+    const tokens = lexer.tokenize() catch |err| {
+        std.log.err("Tokenize error in '{s}': {}", .{ name, err });
+        return err;
+    };
+
+    var parser = Parser.init(allocator, tokens);
+    const doc = parser.parse() catch |err| {
+        std.log.err("Parse error in '{s}': {}", .{ name, err });
+        return err;
+    };
+
+    // Check if template has content
+    var has_content = false;
+    for (doc.nodes) |node| {
+        if (nodeHasOutput(node)) {
+            has_content = true;
+            break;
+        }
+    }
+
+    // Check if template has any dynamic content
+    var has_dynamic = false;
+    for (doc.nodes) |node| {
+        if (nodeHasDynamic(node)) {
+            has_dynamic = true;
+            break;
+        }
+    }
+
+    try w.print("pub fn {s}(a: Allocator, d: anytype) Allocator.Error![]u8 {{\n", .{name});
+
+    if (!has_content) {
+        // Empty template (extends-only, mixin definitions, etc.)
+        try w.writeAll("    _ = .{ a, d };\n");
+        try w.writeAll("    return \"\";\n");
+    } else if (!has_dynamic) {
+        // Static-only template - return literal string, no allocation
+        try w.writeAll("    _ = .{ a, d };\n");
+        var compiler = Compiler.init(allocator, w);
+        try w.writeAll("    return ");
+        for (doc.nodes) |node| {
+            try compiler.emitNode(node);
+        }
+        try compiler.flushAsReturn();
+    } else {
+        // Dynamic template - needs ArrayList
+        try w.writeAll("    var o: ArrayList = .empty;\n");
+
+        var compiler = Compiler.init(allocator, w);
+        for (doc.nodes) |node| {
+            try compiler.emitNode(node);
+        }
+        try compiler.flush();
+
+        try w.writeAll("    return o.items;\n");
+    }
+
+    try w.writeAll("}\n\n");
+}
+
+fn nodeHasOutput(node: ast.Node) bool {
+    return switch (node) {
+        .doctype, .element, .text, .raw_text, .comment => true,
+        .conditional => |c| blk: {
+            for (c.branches) |br| {
+                for (br.children) |child| {
+                    if (nodeHasOutput(child)) break :blk true;
+                }
+            }
+            break :blk false;
+        },
+        .each => |e| blk: {
+            for (e.children) |child| {
+                if (nodeHasOutput(child)) break :blk true;
+            }
+            break :blk false;
+        },
+        .document => |d| blk: {
+            for (d.nodes) |child| {
+                if (nodeHasOutput(child)) break :blk true;
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+fn nodeHasDynamic(node: ast.Node) bool {
+    return switch (node) {
+        .element => |e| blk: {
+            if (e.buffered_code != null) break :blk true;
+            if (e.inline_text) |segs| {
+                for (segs) |seg| {
+                    if (seg != .literal) break :blk true;
+                }
+            }
+            for (e.children) |child| {
+                if (nodeHasDynamic(child)) break :blk true;
+            }
+            break :blk false;
+        },
+        .text => |t| blk: {
+            for (t.segments) |seg| {
+                if (seg != .literal) break :blk true;
+            }
+            break :blk false;
+        },
+        .conditional, .each => true,
+        .document => |d| blk: {
+            for (d.nodes) |child| {
+                if (nodeHasDynamic(child)) break :blk true;
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+const Compiler = struct {
+    allocator: std.mem.Allocator,
+    writer: std.ArrayListUnmanaged(u8).Writer,
+    buf: std.ArrayListUnmanaged(u8), // Buffer for merging static strings
+    depth: usize,
+    loop_vars: std.ArrayListUnmanaged([]const u8), // Track loop variable names
+
+    fn init(allocator: std.mem.Allocator, writer: std.ArrayListUnmanaged(u8).Writer) Compiler {
+        return .{
+            .allocator = allocator,
+            .writer = writer,
+            .buf = .{},
+            .depth = 1,
+            .loop_vars = .{},
+        };
+    }
+
+    fn flush(self: *Compiler) !void {
+        if (self.buf.items.len > 0) {
+            try self.writeIndent();
+            try self.writer.writeAll("try o.appendSlice(a, \"");
+            try self.writer.writeAll(self.buf.items);
+            try self.writer.writeAll("\");\n");
+            self.buf.items.len = 0;
+        }
+    }
+
+    fn flushAsReturn(self: *Compiler) !void {
+        // For static-only templates - return string literal directly
+        try self.writer.writeAll("\"");
+        try self.writer.writeAll(self.buf.items);
+        try self.writer.writeAll("\";\n");
+        self.buf.items.len = 0;
+    }
+
+    fn appendStatic(self: *Compiler, s: []const u8) !void {
+        for (s) |c| {
+            const escaped: []const u8 = switch (c) {
+                '\\' => "\\\\",
+                '"' => "\\\"",
+                '\n' => "\\n",
+                '\r' => "\\r",
+                '\t' => "\\t",
+                else => &[_]u8{c},
+            };
+            try self.buf.appendSlice(self.allocator, escaped);
+        }
+    }
+
+    fn writeIndent(self: *Compiler) !void {
+        for (0..self.depth) |_| try self.writer.writeAll("    ");
+    }
+
+    fn emitNode(self: *Compiler, node: ast.Node) anyerror!void {
+        switch (node) {
+            .doctype => |dt| {
+                if (std.mem.eql(u8, dt.value, "html")) {
+                    try self.appendStatic("<!DOCTYPE html>");
+                } else {
+                    try self.appendStatic("<!DOCTYPE ");
+                    try self.appendStatic(dt.value);
+                    try self.appendStatic(">");
+                }
+            },
+            .element => |e| try self.emitElement(e),
+            .text => |t| try self.emitText(t.segments),
+            .raw_text => |r| try self.appendStatic(r.content),
+            .conditional => |c| try self.emitConditional(c),
+            .each => |e| try self.emitEach(e),
+            .comment => |c| if (c.rendered) {
+                try self.appendStatic("<!-- ");
+                try self.appendStatic(c.content);
+                try self.appendStatic(" -->");
+            },
+            .document => |dc| for (dc.nodes) |child| try self.emitNode(child),
+            else => {},
+        }
+    }
+
+    fn emitElement(self: *Compiler, e: ast.Element) anyerror!void {
+        const is_void = isVoidElement(e.tag) or e.self_closing;
+
+        // Open tag
+        try self.appendStatic("<");
+        try self.appendStatic(e.tag);
+
+        if (e.id) |id| {
+            try self.appendStatic(" id=\"");
+            try self.appendStatic(id);
+            try self.appendStatic("\"");
+        }
+
+        if (e.classes.len > 0) {
+            try self.appendStatic(" class=\"");
+            for (e.classes, 0..) |cls, i| {
+                if (i > 0) try self.appendStatic(" ");
+                try self.appendStatic(cls);
+            }
+            try self.appendStatic("\"");
+        }
+
+        for (e.attributes) |attr| {
+            if (attr.value) |v| {
+                if (v.len >= 2 and (v[0] == '"' or v[0] == '\'')) {
+                    try self.appendStatic(" ");
+                    try self.appendStatic(attr.name);
+                    try self.appendStatic("=\"");
+                    try self.appendStatic(v[1 .. v.len - 1]);
+                    try self.appendStatic("\"");
+                }
+            } else {
+                try self.appendStatic(" ");
+                try self.appendStatic(attr.name);
+                try self.appendStatic("=\"");
+                try self.appendStatic(attr.name);
+                try self.appendStatic("\"");
+            }
+        }
+
+        if (is_void) {
+            try self.appendStatic(" />");
+            return;
+        }
+
+        try self.appendStatic(">");
+
+        if (e.inline_text) |segs| {
+            try self.emitText(segs);
+        }
+
+        if (e.buffered_code) |bc| {
+            try self.emitExpr(bc.expression, bc.escaped);
+        }
+
+        for (e.children) |child| {
+            try self.emitNode(child);
+        }
+
+        try self.appendStatic("</");
+        try self.appendStatic(e.tag);
+        try self.appendStatic(">");
+    }
+
+    fn emitText(self: *Compiler, segs: []const ast.TextSegment) anyerror!void {
+        for (segs) |seg| {
+            switch (seg) {
+                .literal => |lit| try self.appendStatic(lit),
+                .interp_escaped => |expr| try self.emitExpr(expr, true),
+                .interp_unescaped => |expr| try self.emitExpr(expr, false),
+                .interp_tag => |t| try self.emitInlineTag(t),
+            }
+        }
+    }
+
+    fn emitInlineTag(self: *Compiler, t: ast.InlineTag) anyerror!void {
+        try self.appendStatic("<");
+        try self.appendStatic(t.tag);
+        if (t.id) |id| {
+            try self.appendStatic(" id=\"");
+            try self.appendStatic(id);
+            try self.appendStatic("\"");
+        }
+        if (t.classes.len > 0) {
+            try self.appendStatic(" class=\"");
+            for (t.classes, 0..) |cls, i| {
+                if (i > 0) try self.appendStatic(" ");
+                try self.appendStatic(cls);
+            }
+            try self.appendStatic("\"");
+        }
+        try self.appendStatic(">");
+        try self.emitText(t.text_segments);
+        try self.appendStatic("</");
+        try self.appendStatic(t.tag);
+        try self.appendStatic(">");
+    }
+
+    fn emitExpr(self: *Compiler, expr: []const u8, escaped: bool) !void {
+        try self.flush(); // Dynamic content - flush static buffer first
+        try self.writeIndent();
+
+        // Generate the accessor expression
+        var accessor_buf: [512]u8 = undefined;
+        const accessor = self.buildAccessor(expr, &accessor_buf);
+
+        // Use strVal helper to handle type conversion
+        if (escaped) {
+            try self.writer.print("try esc(&o, a, strVal({s}));\n", .{accessor});
+        } else {
+            try self.writer.print("try o.appendSlice(a, strVal({s}));\n", .{accessor});
+        }
+    }
+
+    fn isLoopVar(self: *Compiler, name: []const u8) bool {
+        for (self.loop_vars.items) |v| {
+            if (std.mem.eql(u8, v, name)) return true;
+        }
+        return false;
+    }
+
+    fn buildAccessor(self: *Compiler, expr: []const u8, buf: []u8) []const u8 {
+        // Handle nested field access like friend.name, subFriend.id
+        if (std.mem.indexOfScalar(u8, expr, '.')) |dot| {
+            const base = expr[0..dot];
+            const rest = expr[dot + 1 ..];
+            // For loop variables like friend.name, access directly
+            return std.fmt.bufPrint(buf, "{s}.{s}", .{ base, rest }) catch expr;
+        } else {
+            // Check if it's a loop variable (like color, item, tag)
+            if (self.isLoopVar(expr)) {
+                return expr;
+            }
+            // For top-level like "name", access from d
+            return std.fmt.bufPrint(buf, "@field(d, \"{s}\")", .{expr}) catch expr;
+        }
+    }
+
+    fn emitConditional(self: *Compiler, c: ast.Conditional) anyerror!void {
+        try self.flush();
+        for (c.branches, 0..) |br, i| {
+            try self.writeIndent();
+            if (i == 0) {
+                if (br.is_unless) {
+                    try self.writer.writeAll("if (!");
+                } else {
+                    try self.writer.writeAll("if (");
+                }
+                try self.emitCondition(br.condition orelse "true");
+                try self.writer.writeAll(") {\n");
+            } else if (br.condition) |cond| {
+                try self.writer.writeAll("} else if (");
+                try self.emitCondition(cond);
+                try self.writer.writeAll(") {\n");
+            } else {
+                try self.writer.writeAll("} else {\n");
+            }
+            self.depth += 1;
+            for (br.children) |child| try self.emitNode(child);
+            try self.flush();
+            self.depth -= 1;
+        }
+        try self.writeIndent();
+        try self.writer.writeAll("}\n");
+    }
+
+    fn emitCondition(self: *Compiler, cond: []const u8) !void {
+        // Handle string equality: status == "closed" -> std.mem.eql(u8, status, "closed")
+        if (std.mem.indexOf(u8, cond, " == \"")) |eq_pos| {
+            const lhs = std.mem.trim(u8, cond[0..eq_pos], " ");
+            const rhs_start = eq_pos + 5; // skip ' == "'
+            if (std.mem.indexOfScalar(u8, cond[rhs_start..], '"')) |rhs_end| {
+                const rhs = cond[rhs_start .. rhs_start + rhs_end];
+                try self.writer.print("std.mem.eql(u8, {s}, \"{s}\")", .{ lhs, rhs });
+                return;
+            }
+        }
+        // Handle string inequality: status != "closed"
+        if (std.mem.indexOf(u8, cond, " != \"")) |eq_pos| {
+            const lhs = std.mem.trim(u8, cond[0..eq_pos], " ");
+            const rhs_start = eq_pos + 5;
+            if (std.mem.indexOfScalar(u8, cond[rhs_start..], '"')) |rhs_end| {
+                const rhs = cond[rhs_start .. rhs_start + rhs_end];
+                try self.writer.print("!std.mem.eql(u8, {s}, \"{s}\")", .{ lhs, rhs });
+                return;
+            }
+        }
+        // Regular field access
+        if (std.mem.indexOfScalar(u8, cond, '.')) |_| {
+            try self.writer.print("truthy({s})", .{cond});
+        } else {
+            try self.writer.print("truthy(@field(d, \"{s}\"))", .{cond});
+        }
+    }
+
+    fn emitEach(self: *Compiler, e: ast.Each) anyerror!void {
+        try self.flush();
+        try self.writeIndent();
+
+        // Track this loop variable
+        try self.loop_vars.append(self.allocator, e.value_name);
+
+        // Generate the for loop - handle optional collections with orelse
+        if (std.mem.indexOfScalar(u8, e.collection, '.')) |dot| {
+            const base = e.collection[0..dot];
+            const field = e.collection[dot + 1 ..];
+            // Use orelse to handle optional slices
+            try self.writer.print("for (if (@typeInfo(@TypeOf({s}.{s})) == .optional) ({s}.{s} orelse &.{{}}) else {s}.{s}) |{s}", .{ base, field, base, field, base, field, e.value_name });
+        } else {
+            try self.writer.print("for (@field(d, \"{s}\")) |{s}", .{ e.collection, e.value_name });
+        }
+        if (e.index_name) |idx| {
+            try self.writer.print(", {s}", .{idx});
+        }
+        try self.writer.writeAll("| {\n");
+
+        self.depth += 1;
+        for (e.children) |child| {
+            try self.emitNode(child);
+        }
+        try self.flush();
+        self.depth -= 1;
+
+        try self.writeIndent();
+        try self.writer.writeAll("}\n");
+
+        // Pop loop variable
+        _ = self.loop_vars.pop();
+    }
+};
+
+fn isVoidElement(tag: []const u8) bool {
+    const voids = std.StaticStringMap(void).initComptime(.{
+        .{ "area", {} },  .{ "base", {} }, .{ "br", {} },    .{ "col", {} },
+        .{ "embed", {} }, .{ "hr", {} },   .{ "img", {} },   .{ "input", {} },
+        .{ "link", {} },  .{ "meta", {} }, .{ "param", {} }, .{ "source", {} },
+        .{ "track", {} }, .{ "wbr", {} },
+    });
+    return voids.has(tag);
+}

@@ -3,18 +3,11 @@
     .version = "0.1.3",
     .fingerprint = 0x822db0790e17621d, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
-    .dependencies = .{
-        .httpz = .{
-            .url = "git+https://github.com/karlseguin/http.zig?ref=master#9ef2ffe8d611ff2e1081e5cf39cb4632c145c5b9",
-            .hash = "httpz-0.0.0-PNVzrIowBwAFr_kqBN1W4KBMC2Ofutasj2ZfNAIcfTzF",
-        },
-    },
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
-        // For example...
-        //"LICENSE",
-        //"README.md",
+        "examples",
     },
 }

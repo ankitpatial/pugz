@@ -5,6 +5,9 @@ zig-cache/
 .pugz-cache/
 node_modules
 
+# compiled template file
+generated.zig
+
 # IDE
 .vscode/
 .idea/

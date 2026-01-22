@@ -1,0 +1,21 @@
+.{
+    .name = .demo,
+    .version = "0.0.1",
+    .fingerprint = 0xd642dfa01393173d,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .pugz = .{
+            .path = "../..",
+        },
+        .httpz = .{
+            .url = "git+https://github.com/karlseguin/http.zig?ref=master#9ef2ffe8d611ff2e1081e5cf39cb4632c145c5b9",
+            .hash = "httpz-0.0.0-PNVzrIowBwAFr_kqBN1W4KBMC2Ofutasj2ZfNAIcfTzF",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "views",
+    },
+}

@@ -1174,8 +1174,12 @@ pub const Lexer = struct {
         if (self.peek() != ' ') return;
 
         const next = self.peekAt(1);
+        const next2 = self.peekAt(2);
+
         // Don't consume if followed by another selector, attribute, or special syntax
-        if (next == '.' or next == '#' or next == '(' or next == '=' or next == ':' or
+        // BUT: #{...} and #[...] are interpolation, not ID selectors
+        const is_id_selector = next == '#' and next2 != '{' and next2 != '[';
+        if (next == '.' or is_id_selector or next == '(' or next == '=' or next == ':' or
             next == '\n' or next == '\r' or next == 0)
         {
             return;

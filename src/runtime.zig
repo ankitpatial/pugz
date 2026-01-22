@@ -46,17 +46,44 @@ pub const Value = union(enum) {
     object: std.StringHashMapUnmanaged(Value),
 
     /// Returns the value as a string for output.
+    /// For integers, uses pre-computed strings for small values to avoid allocation.
     pub fn toString(self: Value, allocator: std.mem.Allocator) ![]const u8 {
+        // Fast path: strings are most common in templates (branch hint)
+        if (self == .string) {
+            @branchHint(.likely);
+            return self.string;
+        }
         return switch (self) {
+            .string => unreachable, // handled above
             .null => "",
             .bool => |b| if (b) "true" else "false",
-            .int => |i| try std.fmt.allocPrint(allocator, "{d}", .{i}),
+            .int => |i| blk: {
+                // Fast path for common small integers (0-99)
+                if (i >= 0 and i < 100) {
+                    break :blk small_int_strings[@intCast(i)];
+                }
+                // Allocate for larger integers
+                break :blk try std.fmt.allocPrint(allocator, "{d}", .{i});
+            },
             .float => |f| try std.fmt.allocPrint(allocator, "{d}", .{f}),
-            .string => |s| s,
             .array => "[Array]",
             .object => "[Object]",
         };
     }
+
+    /// Pre-computed strings for small integers 0-99 (common in loops)
+    const small_int_strings = [_][]const u8{
+        "0",  "1",  "2",  "3",  "4",  "5",  "6",  "7",  "8",  "9",
+        "10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
+        "20", "21", "22", "23", "24", "25", "26", "27", "28", "29",
+        "30", "31", "32", "33", "34", "35", "36", "37", "38", "39",
+        "40", "41", "42", "43", "44", "45", "46", "47", "48", "49",
+        "50", "51", "52", "53", "54", "55", "56", "57", "58", "59",
+        "60", "61", "62", "63", "64", "65", "66", "67", "68", "69",
+        "70", "71", "72", "73", "74", "75", "76", "77", "78", "79",
+        "80", "81", "82", "83", "84", "85", "86", "87", "88", "89",
+        "90", "91", "92", "93", "94", "95", "96", "97", "98", "99",
+    };
 
     /// Returns the value as a boolean for conditionals.
     pub fn isTruthy(self: Value) bool {
@@ -155,10 +182,31 @@ pub const Context = struct {
         try current.put(self.allocator, name, value);
     }
 
+    /// Gets or creates a slot for a variable, returning a pointer to the value.
+    /// Use this for loop variables that are updated repeatedly.
+    pub fn getOrPutPtr(self: *Context, name: []const u8) !*Value {
+        if (self.scope_depth == 0) {
+            try self.pushScope();
+        }
+        const current = &self.scopes.items[self.scope_depth - 1];
+        const gop = try current.getOrPut(self.allocator, name);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = Value.null;
+        }
+        return gop.value_ptr;
+    }
+
     /// Gets a variable, searching from innermost to outermost scope.
     pub fn get(self: *Context, name: []const u8) ?Value {
-        // Search from innermost to outermost scope
-        var i = self.scope_depth;
+        // Fast path: most lookups are in the innermost scope
+        if (self.scope_depth > 0) {
+            @branchHint(.likely);
+            if (self.scopes.items[self.scope_depth - 1].get(name)) |value| {
+                return value;
+            }
+        }
+        // Search remaining scopes (less common)
+        var i = self.scope_depth -| 1;
         while (i > 0) {
             i -= 1;
             if (self.scopes.items[i].get(name)) |value| {
@@ -249,7 +297,8 @@ pub const Runtime = struct {
 
     /// Renders the document and returns the HTML output.
     pub fn render(self: *Runtime, doc: ast.Document) Error![]const u8 {
-        try self.output.ensureTotalCapacity(self.allocator, 1024);
+        // Pre-allocate buffer - 256KB handles most large templates without realloc
+        try self.output.ensureTotalCapacity(self.allocator, 256 * 1024);
 
         // Handle template inheritance
         if (doc.extends_path) |extends_path| {
@@ -600,11 +649,18 @@ pub const Runtime = struct {
                 try self.context.pushScope();
                 defer self.context.popScope();
 
+                // Get direct pointers to loop variables - avoids hash lookup per iteration
+                const value_ptr = try self.context.getOrPutPtr(each.value_name);
+                const index_ptr: ?*Value = if (each.index_name) |idx_name|
+                    try self.context.getOrPutPtr(idx_name)
+                else
+                    null;
+
                 for (items, 0..) |item, index| {
-                    // Just overwrite the loop variable (no scope push/pop per iteration)
-                    try self.context.set(each.value_name, item);
-                    if (each.index_name) |idx_name| {
-                        try self.context.set(idx_name, Value.integer(@intCast(index)));
+                    // Direct pointer update - no hash lookup!
+                    value_ptr.* = item;
+                    if (index_ptr) |ptr| {
+                        ptr.* = Value.integer(@intCast(index));
                     }
 
                     for (each.children) |child| {
@@ -624,19 +680,24 @@ pub const Runtime = struct {
                 try self.context.pushScope();
                 defer self.context.popScope();
 
+                // Get direct pointers to loop variables
+                const value_ptr = try self.context.getOrPutPtr(each.value_name);
+                const index_ptr: ?*Value = if (each.index_name) |idx_name|
+                    try self.context.getOrPutPtr(idx_name)
+                else
+                    null;
+
                 var iter = obj.iterator();
-                var index: usize = 0;
                 while (iter.next()) |entry| {
-                    // Just overwrite the loop variable (no scope push/pop per iteration)
-                    try self.context.set(each.value_name, entry.value_ptr.*);
-                    if (each.index_name) |idx_name| {
-                        try self.context.set(idx_name, Value.str(entry.key_ptr.*));
+                    // Direct pointer update - no hash lookup!
+                    value_ptr.* = entry.value_ptr.*;
+                    if (index_ptr) |ptr| {
+                        ptr.* = Value.str(entry.key_ptr.*);
                     }
 
                     for (each.children) |child| {
                         try self.visitNode(child);
                     }
-                    index += 1;
                 }
             },
             else => {
@@ -1032,8 +1093,60 @@ pub const Runtime = struct {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Evaluates a simple expression (variable lookup or literal).
+    /// Optimized for common cases: simple variable names without operators.
     fn evaluateExpression(self: *Runtime, expr: []const u8) Value {
-        const trimmed = std.mem.trim(u8, expr, " \t");
+        // Fast path: empty expression
+        if (expr.len == 0) return Value.null;
+
+        const first = expr[0];
+
+        // Ultra-fast path: identifier starting with a-z (most common case)
+        // Covers: friend, name, friend.name, friend.email, tag, etc.
+        if (first >= 'a' and first <= 'z') {
+            // Scan for operators - if none found, direct variable lookup
+            for (expr) |c| {
+                // Check for operators that require complex evaluation
+                if (c == '+' or c == '[' or c == '(' or c == '{' or c == ' ' or c == '\t') {
+                    break;
+                }
+            } else {
+                // No operators found - direct variable lookup (most common path)
+                return self.lookupVariable(expr);
+            }
+        }
+
+        // Fast path: check if expression needs trimming
+        const last = expr[expr.len - 1];
+        const needs_trim = first == ' ' or first == '\t' or last == ' ' or last == '\t';
+        const trimmed = if (needs_trim) std.mem.trim(u8, expr, " \t") else expr;
+
+        if (trimmed.len == 0) return Value.null;
+
+        // Fast path: simple variable lookup (no special chars except dots)
+        // Most expressions in templates are just variable names like "name" or "friend.email"
+        const first_char = trimmed[0];
+        if (first_char != '"' and first_char != '\'' and first_char != '-' and
+            (first_char < '0' or first_char > '9'))
+        {
+            // Quick scan: if no special operators, go straight to variable lookup
+            var has_operator = false;
+            for (trimmed) |c| {
+                if (c == '+' or c == '[' or c == '(' or c == '{') {
+                    has_operator = true;
+                    break;
+                }
+            }
+            if (!has_operator) {
+                // Check for boolean/null literals
+                if (trimmed.len <= 5) {
+                    if (std.mem.eql(u8, trimmed, "true")) return Value.boolean(true);
+                    if (std.mem.eql(u8, trimmed, "false")) return Value.boolean(false);
+                    if (std.mem.eql(u8, trimmed, "null")) return Value.null;
+                }
+                // Simple variable lookup
+                return self.lookupVariable(trimmed);
+            }
+        }
 
         // Check for string concatenation with + operator
         // e.g., "btn btn-" + type or "hello " + name + "!"
@@ -1053,8 +1166,8 @@ pub const Runtime = struct {
 
         // Check for string literal
         if (trimmed.len >= 2) {
-            if ((trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') or
-                (trimmed[0] == '\'' and trimmed[trimmed.len - 1] == '\''))
+            if ((first_char == '"' and trimmed[trimmed.len - 1] == '"') or
+                (first_char == '\'' and trimmed[trimmed.len - 1] == '\''))
             {
                 return Value.str(trimmed[1 .. trimmed.len - 1]);
             }
@@ -1065,7 +1178,7 @@ pub const Runtime = struct {
             return Value.integer(i);
         } else |_| {}
 
-        // Check for boolean literals
+        // Check for boolean literals (fallback for complex expressions)
         if (std.mem.eql(u8, trimmed, "true")) return Value.boolean(true);
         if (std.mem.eql(u8, trimmed, "false")) return Value.boolean(false);
         if (std.mem.eql(u8, trimmed, "null")) return Value.null;
@@ -1113,19 +1226,45 @@ pub const Runtime = struct {
     }
 
     /// Looks up a variable with dot notation support.
+    /// Optimized for the common case of single property access (e.g., "friend.name").
     fn lookupVariable(self: *Runtime, path: []const u8) Value {
-        var parts = std.mem.splitScalar(u8, path, '.');
-        const first = parts.first();
-
-        var current = self.context.get(first) orelse return Value.null;
-
-        while (parts.next()) |part| {
-            switch (current) {
-                .object => |obj| {
-                    current = obj.get(part) orelse return Value.null;
-                },
-                else => return Value.null,
+        // Fast path: find first dot position
+        var dot_pos: ?usize = null;
+        for (path, 0..) |c, i| {
+            if (c == '.') {
+                dot_pos = i;
+                break;
             }
+        }
+
+        if (dot_pos == null) {
+            // No dots - simple variable lookup
+            return self.context.get(path) orelse Value.null;
+        }
+
+        // Has dots - get base variable first
+        const base_name = path[0..dot_pos.?];
+        var current = self.context.get(base_name) orelse return Value.null;
+
+        // Property access loop - objects are most common
+        var pos = dot_pos.? + 1;
+        while (pos < path.len) {
+            // Find next dot or end
+            var end = pos;
+            while (end < path.len and path[end] != '.') {
+                end += 1;
+            }
+            const prop = path[pos..end];
+
+            // Most values are objects in property chains (branch hint)
+            if (current == .object) {
+                @branchHint(.likely);
+                current = current.object.get(prop) orelse return Value.null;
+            } else {
+                return Value.null;
+            }
+
+            pos = end + 1;
         }
 
         return current;
@@ -1335,34 +1474,81 @@ pub const Runtime = struct {
     }
 
     fn write(self: *Runtime, str: []const u8) Error!void {
-        try self.output.appendSlice(self.allocator, str);
+        // Use addManyAsSlice for potentially faster bulk copy
+        const dest = try self.output.addManyAsSlice(self.allocator, str.len);
+        @memcpy(dest, str);
     }
 
     fn writeEscaped(self: *Runtime, str: []const u8) Error!void {
-        var start: usize = 0;
+        // Fast path: use SIMD-friendly byte scan for escape characters
+        // Check if any escaping needed using a simple loop (compiler can vectorize)
+        var escape_needed: usize = str.len;
         for (str, 0..) |c, i| {
-            const escape: ?[]const u8 = switch (c) {
-                '&' => "&amp;",
-                '<' => "&lt;",
-                '>' => "&gt;",
-                '"' => "&quot;",
-                '\'' => "&#x27;",
-                else => null,
-            };
-            if (escape) |esc| {
+            // Use a lookup instead of multiple comparisons
+            if (escape_table[c]) {
+                escape_needed = i;
+                break;
+            }
+        }
+
+        // No escaping needed - single fast write
+        if (escape_needed == str.len) {
+            const dest = try self.output.addManyAsSlice(self.allocator, str.len);
+            @memcpy(dest, str);
+            return;
+        }
+
+        // Write prefix that doesn't need escaping
+        if (escape_needed > 0) {
+            const dest = try self.output.addManyAsSlice(self.allocator, escape_needed);
+            @memcpy(dest, str[0..escape_needed]);
+        }
+
+        // Slow path: escape remaining characters
+        var start = escape_needed;
+        for (str[escape_needed..], escape_needed..) |c, i| {
+            if (escape_table[c]) {
                 // Write accumulated non-escaped chars first
                 if (i > start) {
-                    try self.output.appendSlice(self.allocator, str[start..i]);
+                    const chunk = str[start..i];
+                    const dest = try self.output.addManyAsSlice(self.allocator, chunk.len);
+                    @memcpy(dest, chunk);
                 }
-                try self.output.appendSlice(self.allocator, esc);
+                const esc = escape_strings[c];
+                const dest = try self.output.addManyAsSlice(self.allocator, esc.len);
+                @memcpy(dest, esc);
                 start = i + 1;
             }
         }
         // Write remaining non-escaped chars
         if (start < str.len) {
-            try self.output.appendSlice(self.allocator, str[start..]);
+            const chunk = str[start..];
+            const dest = try self.output.addManyAsSlice(self.allocator, chunk.len);
+            @memcpy(dest, chunk);
         }
     }
+
+    /// Lookup table for characters that need HTML escaping
+    const escape_table = blk: {
+        var table: [256]bool = [_]bool{false} ** 256;
+        table['&'] = true;
+        table['<'] = true;
+        table['>'] = true;
+        table['"'] = true;
+        table['\''] = true;
+        break :blk table;
+    };
+
+    /// Escape strings for each character
+    const escape_strings = blk: {
+        var strings: [256][]const u8 = [_][]const u8{""} ** 256;
+        strings['&'] = "&amp;";
+        strings['<'] = "&lt;";
+        strings['>'] = "&gt;";
+        strings['"'] = "&quot;";
+        strings['\''] = "&#x27;";
+        break :blk strings;
+    };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1582,6 +1768,7 @@ pub fn render(allocator: std.mem.Allocator, doc: ast.Document, data: anytype) ![
 }
 
 /// Converts a Zig value to a runtime Value.
+/// For best performance, use an arena allocator.
 pub fn toValue(allocator: std.mem.Allocator, v: anytype) Value {
     const T = @TypeOf(v);
 
@@ -1628,11 +1815,12 @@ pub fn toValue(allocator: std.mem.Allocator, v: anytype) Value {
             return Value.null;
         },
         .@"struct" => |info| {
-            // Convert struct to object
+            // Convert struct to object - pre-allocate for known field count
             var obj = std.StringHashMapUnmanaged(Value).empty;
+            obj.ensureTotalCapacity(allocator, info.fields.len) catch return Value.null;
             inline for (info.fields) |field| {
                 const field_value = @field(v, field.name);
-                obj.put(allocator, field.name, toValue(allocator, field_value)) catch return Value.null;
+                obj.putAssumeCapacity(field.name, toValue(allocator, field_value));
             }
             return .{ .object = obj };
         },
