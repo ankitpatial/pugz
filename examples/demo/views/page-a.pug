@@ -13,3 +13,9 @@ block content
   ul
     each val in items
       li= val
+  input(data-json=`
+    {
+      "very-long": "piece of ",
+      "data": true
+    }
+  `)

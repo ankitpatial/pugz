@@ -700,6 +700,32 @@ const Compiler = struct {
         }
     }
 
+    /// Appends string content with normalized whitespace (for backtick template literals).
+    /// Collapses newlines and multiple spaces into single spaces, trims leading/trailing whitespace.
+    fn appendNormalizedWhitespace(self: *Compiler, s: []const u8) !void {
+        var in_whitespace = true; // Start true to skip leading whitespace
+        for (s) |c| {
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+                if (!in_whitespace) {
+                    try self.buf.appendSlice(self.allocator, " ");
+                    in_whitespace = true;
+                }
+            } else {
+                const escaped: []const u8 = switch (c) {
+                    '\\' => "\\\\",
+                    '"' => "\\\"",
+                    else => &[_]u8{c},
+                };
+                try self.buf.appendSlice(self.allocator, escaped);
+                in_whitespace = false;
+            }
+        }
+        // Remove trailing space if present
+        if (self.buf.items.len > 0 and self.buf.items[self.buf.items.len - 1] == ' ') {
+            self.buf.items.len -= 1;
+        }
+    }
+
     fn writeIndent(self: *Compiler) !void {
         for (0..self.depth) |_| try self.writer.writeAll("    ");
     }
@@ -872,12 +898,17 @@ const Compiler = struct {
 
             try self.writeIndent();
             try self.writer.writeAll("try o.appendSlice(a, \"\\\"\");\n");
-        } else if (value.len >= 2 and (value[0] == '"' or value[0] == '\'')) {
-            // Simple string literal
+        } else if (value.len >= 2 and (value[0] == '"' or value[0] == '\'' or value[0] == '`')) {
+            // Simple string literal (single, double, or backtick quoted)
             try self.appendStatic(" ");
             try self.appendStatic(name);
             try self.appendStatic("=\"");
-            try self.appendStatic(value[1 .. value.len - 1]);
+            // For backtick strings, normalize whitespace (collapse newlines and multiple spaces)
+            if (value[0] == '`') {
+                try self.appendNormalizedWhitespace(value[1 .. value.len - 1]);
+            } else {
+                try self.appendStatic(value[1 .. value.len - 1]);
+            }
             try self.appendStatic("\"");
         } else {
             // Dynamic value (variable reference)
@@ -909,7 +940,7 @@ const Compiler = struct {
                     in_string = false;
                 }
             } else {
-                if (c == '"' or c == '\'') {
+                if (c == '"' or c == '\'' or c == '`') {
                     in_string = true;
                     string_char = c;
                 } else if (c == '+') {
@@ -930,8 +961,8 @@ const Compiler = struct {
         const right = std.mem.trim(u8, value[concat_pos + 1 ..], " ");
 
         // Emit left part
-        if (left.len >= 2 and (left[0] == '"' or left[0] == '\'')) {
-            // String literal
+        if (left.len >= 2 and (left[0] == '"' or left[0] == '\'' or left[0] == '`')) {
+            // String literal (single, double, or backtick quoted)
             try self.writeIndent();
             try self.writer.print("try o.appendSlice(a, {s});\n", .{left});
         } else {
@@ -947,8 +978,8 @@ const Compiler = struct {
             try self.emitConcatExpr(right, next_concat);
         } else {
             // Emit right part
-            if (right.len >= 2 and (right[0] == '"' or right[0] == '\'')) {
-                // String literal
+            if (right.len >= 2 and (right[0] == '"' or right[0] == '\'' or right[0] == '`')) {
+                // String literal (single, double, or backtick quoted)
                 try self.writeIndent();
                 try self.writer.print("try o.appendSlice(a, {s});\n", .{right});
             } else {
