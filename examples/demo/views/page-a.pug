@@ -19,6 +19,14 @@ block content
       "data": true
     }
   `)
+
+  br
+  div(class='div-class', (click)='play()') one
+  div(class='div-class' '(click)'='play()') two
+  a(style={color: 'red', background: 'green'}) sdfsdfs
+  a.button btn
+  br
+
   form(method="post")
     +input_text("firstName",  "First Name", "first name")
     br

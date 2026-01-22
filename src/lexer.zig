@@ -561,11 +561,100 @@ pub const Lexer = struct {
                 continue;
             }
 
-            // Check for bare value (mixin argument): starts with quote or digit
             const c = self.peek();
-            if (c == '"' or c == '\'' or c == '`' or c == '{' or c == '[' or isDigit(c)) {
+
+            // Check for quoted attribute name: '(click)'='play()' or "(click)"="play()"
+            if (c == '"' or c == '\'') {
+                // Look ahead to see if this is a quoted attribute name (followed by =)
+                const quote = c;
+                var lookahead = self.pos + 1;
+                while (lookahead < self.source.len and self.source[lookahead] != quote) {
+                    lookahead += 1;
+                }
+                if (lookahead < self.source.len) {
+                    lookahead += 1; // skip closing quote
+                    // Skip whitespace
+                    while (lookahead < self.source.len and (self.source[lookahead] == ' ' or self.source[lookahead] == '\t')) {
+                        lookahead += 1;
+                    }
+                    // Check if followed by = (attribute name) or not (bare value)
+                    if (lookahead < self.source.len and (self.source[lookahead] == '=' or
+                        (self.source[lookahead] == '!' and lookahead + 1 < self.source.len and self.source[lookahead + 1] == '=')))
+                    {
+                        // This is a quoted attribute name
+                        self.advance(); // skip opening quote
+                        const name_start = self.pos;
+                        while (!self.isAtEnd() and self.peek() != quote) {
+                            self.advance();
+                        }
+                        const attr_name = self.source[name_start..self.pos];
+                        if (self.peek() == quote) self.advance(); // skip closing quote
+                        try self.addToken(.attr_name, attr_name);
+
+                        self.skipWhitespaceInAttrs();
+
+                        // Value assignment: = or !=
+                        if (self.peek() == '!' and self.peekNext() == '=') {
+                            self.advance();
+                            self.advance();
+                            try self.addToken(.attr_eq, "!=");
+                            self.skipWhitespaceInAttrs();
+                            try self.scanAttrValue();
+                        } else if (self.peek() == '=') {
+                            self.advance();
+                            try self.addToken(.attr_eq, "=");
+                            self.skipWhitespaceInAttrs();
+                            try self.scanAttrValue();
+                        }
+                        continue;
+                    }
+                }
+                // Not followed by =, treat as bare value (mixin argument)
+                try self.scanAttrValue();
+                continue;
+            }
+
+            // Check for bare value (mixin argument): starts with backtick, brace, bracket, or digit
+            if (c == '`' or c == '{' or c == '[' or isDigit(c)) {
                 // This is a bare value (mixin argument), not name=value
                 try self.scanAttrValue();
+                continue;
+            }
+
+            // Check for parenthesized attribute name: (click)='play()'
+            // This is valid when preceded by comma or at start of attributes
+            if (c == '(') {
+                const name_start = self.pos;
+                self.advance(); // skip (
+                var paren_depth: usize = 1;
+                while (!self.isAtEnd() and paren_depth > 0) {
+                    const ch = self.peek();
+                    if (ch == '(') {
+                        paren_depth += 1;
+                    } else if (ch == ')') {
+                        paren_depth -= 1;
+                    }
+                    if (paren_depth > 0) self.advance();
+                }
+                if (self.peek() == ')') self.advance(); // skip closing )
+                const attr_name = self.source[name_start..self.pos];
+                try self.addToken(.attr_name, attr_name);
+
+                self.skipWhitespaceInAttrs();
+
+                // Value assignment: = or !=
+                if (self.peek() == '!' and self.peekNext() == '=') {
+                    self.advance();
+                    self.advance();
+                    try self.addToken(.attr_eq, "!=");
+                    self.skipWhitespaceInAttrs();
+                    try self.scanAttrValue();
+                } else if (self.peek() == '=') {
+                    self.advance();
+                    try self.addToken(.attr_eq, "=");
+                    self.skipWhitespaceInAttrs();
+                    try self.scanAttrValue();
+                }
                 continue;
             }
 

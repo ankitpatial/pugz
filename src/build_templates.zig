@@ -910,6 +910,26 @@ const Compiler = struct {
                 try self.appendStatic(value[1 .. value.len - 1]);
             }
             try self.appendStatic("\"");
+        } else if (value.len >= 2 and value[0] == '{' and value[value.len - 1] == '}') {
+            // Object literal - convert to appropriate format
+            try self.appendStatic(" ");
+            try self.appendStatic(name);
+            try self.appendStatic("=\"");
+            if (std.mem.eql(u8, name, "style")) {
+                // For style attribute, convert object to CSS: {color: 'red'} -> color:red;
+                try self.appendStatic(parseObjectToCSS(value));
+            } else {
+                // For other attributes (like class), join values with spaces
+                try self.appendStatic(parseObjectToSpaceSeparated(value));
+            }
+            try self.appendStatic("\"");
+        } else if (value.len >= 2 and value[0] == '[' and value[value.len - 1] == ']') {
+            // Array literal - join with spaces for class attribute, otherwise as-is
+            try self.appendStatic(" ");
+            try self.appendStatic(name);
+            try self.appendStatic("=\"");
+            try self.appendStatic(parseArrayToSpaceSeparated(value));
+            try self.appendStatic("\"");
         } else {
             // Dynamic value (variable reference)
             try self.flush();
@@ -1464,6 +1484,244 @@ const Compiler = struct {
         return null;
     }
 };
+
+/// Parses a JS object literal and converts it to CSS style string (compile-time).
+/// Input: {color: 'red', background: 'green'}
+/// Output: color:red;background:green;
+fn parseObjectToCSS(input: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, input, " \t\n\r");
+
+    // Must start with { and end with }
+    if (trimmed.len < 2 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') {
+        return input;
+    }
+
+    const content = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\n\r");
+    if (content.len == 0) return "";
+
+    // Use comptime buffer for simple cases
+    var result: [1024]u8 = undefined;
+    var result_len: usize = 0;
+
+    var pos: usize = 0;
+    while (pos < content.len) {
+        // Skip whitespace
+        while (pos < content.len and (content[pos] == ' ' or content[pos] == '\t' or content[pos] == '\n' or content[pos] == '\r')) {
+            pos += 1;
+        }
+        if (pos >= content.len) break;
+
+        // Parse property name
+        const name_start = pos;
+        while (pos < content.len and content[pos] != ':' and content[pos] != ' ') {
+            pos += 1;
+        }
+        const name = content[name_start..pos];
+
+        // Skip to colon
+        while (pos < content.len and content[pos] != ':') {
+            pos += 1;
+        }
+        if (pos >= content.len) break;
+        pos += 1; // skip :
+
+        // Skip whitespace
+        while (pos < content.len and (content[pos] == ' ' or content[pos] == '\t')) {
+            pos += 1;
+        }
+
+        // Parse value (handle quoted strings)
+        var value_start = pos;
+        var value_end = pos;
+        if (pos < content.len and (content[pos] == '\'' or content[pos] == '"')) {
+            const quote = content[pos];
+            pos += 1;
+            value_start = pos;
+            while (pos < content.len and content[pos] != quote) {
+                pos += 1;
+            }
+            value_end = pos;
+            if (pos < content.len) pos += 1; // skip closing quote
+        } else {
+            // Unquoted value - read until comma or end
+            while (pos < content.len and content[pos] != ',' and content[pos] != '}') {
+                pos += 1;
+            }
+            value_end = pos;
+            // Trim trailing whitespace from value
+            while (value_end > value_start and (content[value_end - 1] == ' ' or content[value_end - 1] == '\t')) {
+                value_end -= 1;
+            }
+        }
+        const value = content[value_start..value_end];
+
+        // Append name:value;
+        if (result_len + name.len + 1 + value.len + 1 < result.len) {
+            @memcpy(result[result_len..][0..name.len], name);
+            result_len += name.len;
+            result[result_len] = ':';
+            result_len += 1;
+            @memcpy(result[result_len..][0..value.len], value);
+            result_len += value.len;
+            result[result_len] = ';';
+            result_len += 1;
+        }
+
+        // Skip comma and whitespace
+        while (pos < content.len and (content[pos] == ',' or content[pos] == ' ' or content[pos] == '\t' or content[pos] == '\n' or content[pos] == '\r')) {
+            pos += 1;
+        }
+    }
+
+    // Return slice from static buffer - this works because we're building static strings
+    return result[0..result_len];
+}
+
+/// Parses a JS object literal and extracts values as space-separated string.
+/// Input: {foo: 'bar', baz: 'qux'}
+/// Output: bar qux
+fn parseObjectToSpaceSeparated(input: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, input, " \t\n\r");
+    if (trimmed.len < 2 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') {
+        return input;
+    }
+
+    const content = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\n\r");
+    if (content.len == 0) return "";
+
+    var result: [1024]u8 = undefined;
+    var result_len: usize = 0;
+    var first = true;
+
+    var pos: usize = 0;
+    while (pos < content.len) {
+        // Skip whitespace
+        while (pos < content.len and (content[pos] == ' ' or content[pos] == '\t' or content[pos] == '\n' or content[pos] == '\r')) {
+            pos += 1;
+        }
+        if (pos >= content.len) break;
+
+        // Skip property name until colon
+        while (pos < content.len and content[pos] != ':') {
+            pos += 1;
+        }
+        if (pos >= content.len) break;
+        pos += 1; // skip :
+
+        // Skip whitespace
+        while (pos < content.len and (content[pos] == ' ' or content[pos] == '\t')) {
+            pos += 1;
+        }
+
+        // Parse value
+        var value_start = pos;
+        var value_end = pos;
+        if (pos < content.len and (content[pos] == '\'' or content[pos] == '"')) {
+            const quote = content[pos];
+            pos += 1;
+            value_start = pos;
+            while (pos < content.len and content[pos] != quote) {
+                pos += 1;
+            }
+            value_end = pos;
+            if (pos < content.len) pos += 1;
+        } else {
+            while (pos < content.len and content[pos] != ',' and content[pos] != '}') {
+                pos += 1;
+            }
+            value_end = pos;
+            while (value_end > value_start and (content[value_end - 1] == ' ' or content[value_end - 1] == '\t')) {
+                value_end -= 1;
+            }
+        }
+        const value = content[value_start..value_end];
+
+        // Append value with space separator
+        if (result_len + (if (first) @as(usize, 0) else @as(usize, 1)) + value.len < result.len) {
+            if (!first) {
+                result[result_len] = ' ';
+                result_len += 1;
+            }
+            @memcpy(result[result_len..][0..value.len], value);
+            result_len += value.len;
+            first = false;
+        }
+
+        // Skip comma and whitespace
+        while (pos < content.len and (content[pos] == ',' or content[pos] == ' ' or content[pos] == '\t' or content[pos] == '\n' or content[pos] == '\r')) {
+            pos += 1;
+        }
+    }
+
+    return result[0..result_len];
+}
+
+/// Parses a JS array literal and extracts values as space-separated string.
+/// Input: ['foo', 'bar', 'baz']
+/// Output: foo bar baz
+fn parseArrayToSpaceSeparated(input: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, input, " \t\n\r");
+    if (trimmed.len < 2 or trimmed[0] != '[' or trimmed[trimmed.len - 1] != ']') {
+        return input;
+    }
+
+    const content = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\n\r");
+    if (content.len == 0) return "";
+
+    var result: [1024]u8 = undefined;
+    var result_len: usize = 0;
+    var first = true;
+
+    var pos: usize = 0;
+    while (pos < content.len) {
+        // Skip whitespace
+        while (pos < content.len and (content[pos] == ' ' or content[pos] == '\t' or content[pos] == '\n' or content[pos] == '\r')) {
+            pos += 1;
+        }
+        if (pos >= content.len) break;
+
+        // Parse value
+        var value_start = pos;
+        var value_end = pos;
+        if (pos < content.len and (content[pos] == '\'' or content[pos] == '"')) {
+            const quote = content[pos];
+            pos += 1;
+            value_start = pos;
+            while (pos < content.len and content[pos] != quote) {
+                pos += 1;
+            }
+            value_end = pos;
+            if (pos < content.len) pos += 1;
+        } else {
+            while (pos < content.len and content[pos] != ',' and content[pos] != ']') {
+                pos += 1;
+            }
+            value_end = pos;
+            while (value_end > value_start and (content[value_end - 1] == ' ' or content[value_end - 1] == '\t')) {
+                value_end -= 1;
+            }
+        }
+        const value = content[value_start..value_end];
+
+        // Append value with space separator
+        if (value.len > 0 and result_len + (if (first) @as(usize, 0) else @as(usize, 1)) + value.len < result.len) {
+            if (!first) {
+                result[result_len] = ' ';
+                result_len += 1;
+            }
+            @memcpy(result[result_len..][0..value.len], value);
+            result_len += value.len;
+            first = false;
+        }
+
+        // Skip comma and whitespace
+        while (pos < content.len and (content[pos] == ',' or content[pos] == ' ' or content[pos] == '\t' or content[pos] == '\n' or content[pos] == '\r')) {
+            pos += 1;
+        }
+    }
+
+    return result[0..result_len];
+}
 
 fn isVoidElement(tag: []const u8) bool {
     const voids = std.StaticStringMap(void).initComptime(.{
