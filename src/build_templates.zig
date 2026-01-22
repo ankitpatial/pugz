@@ -29,20 +29,21 @@ pub const Options = struct {
     extension: []const u8 = ".pug",
 };
 
+/// Pre compile templates from source_dir/*.pug to source_dir/generated.zig to avoid lexer/parser phase on render.
 pub fn compileTemplates(b: *std.Build, options: Options) *std.Build.Module {
-    const gen_step = TemplateGenStep.create(b, options);
+    const step = CompileTemplatesStep.create(b, options);
     return b.createModule(.{
-        .root_source_file = gen_step.getOutput(),
+        .root_source_file = step.getOutput(),
     });
 }
 
-const TemplateGenStep = struct {
+const CompileTemplatesStep = struct {
     step: std.Build.Step,
     options: Options,
     generated_file: std.Build.GeneratedFile,
 
-    fn create(b: *std.Build, options: Options) *TemplateGenStep {
-        const self = b.allocator.create(TemplateGenStep) catch @panic("OOM");
+    fn create(b: *std.Build, options: Options) *CompileTemplatesStep {
+        const self = b.allocator.create(CompileTemplatesStep) catch @panic("pugz failed on CompileTemplatesStep");
         self.* = .{
             .step = std.Build.Step.init(.{
                 .id = .custom,
@@ -56,21 +57,27 @@ const TemplateGenStep = struct {
         return self;
     }
 
-    fn getOutput(self: *TemplateGenStep) std.Build.LazyPath {
+    fn getOutput(self: *CompileTemplatesStep) std.Build.LazyPath {
         return .{ .generated = .{ .file = &self.generated_file } };
     }
 
     fn make(step: *std.Build.Step, _: std.Build.Step.MakeOptions) !void {
-        const self: *TemplateGenStep = @fieldParentPtr("step", step);
+        const self: *CompileTemplatesStep = @fieldParentPtr("step", step);
         const b = step.owner;
         const allocator = b.allocator;
 
         var templates = std.ArrayList(TemplateInfo){};
         defer templates.deinit(allocator);
+
         try findTemplates(allocator, self.options.source_dir, "", self.options.extension, &templates);
 
         const out_path = try std.fs.path.join(allocator, &.{ self.options.source_dir, "generated.zig" });
-        try generateSingleFile(allocator, self.options.source_dir, out_path, templates.items);
+        try generateSingleFile(
+            allocator,
+            self.options.source_dir,
+            out_path,
+            templates.items,
+        );
 
         self.generated_file.path = out_path;
     }
@@ -81,17 +88,18 @@ const TemplateInfo = struct {
     zig_name: []const u8,
 };
 
+/// Walk source directory recursively to find pug files
 fn findTemplates(
     allocator: std.mem.Allocator,
-    base_dir: []const u8,
-    sub_path: []const u8,
+    source_dir: []const u8,
+    out_path: []const u8,
     extension: []const u8,
     templates: *std.ArrayList(TemplateInfo),
 ) !void {
-    const full_path = if (sub_path.len > 0)
-        try std.fs.path.join(allocator, &.{ base_dir, sub_path })
+    const full_path = if (out_path.len > 0)
+        try std.fs.path.join(allocator, &.{ source_dir, out_path })
     else
-        try allocator.dupe(u8, base_dir);
+        try allocator.dupe(u8, source_dir);
     defer allocator.free(full_path);
 
     var dir = std.fs.cwd().openDir(full_path, .{ .iterate = true }) catch |err| {
@@ -103,16 +111,15 @@ fn findTemplates(
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
         const name = try allocator.dupe(u8, entry.name);
-
         if (entry.kind == .directory) {
-            const new_sub = if (sub_path.len > 0)
-                try std.fs.path.join(allocator, &.{ sub_path, name })
+            const new_sub = if (out_path.len > 0)
+                try std.fs.path.join(allocator, &.{ out_path, name })
             else
                 name;
-            try findTemplates(allocator, base_dir, new_sub, extension, templates);
+            try findTemplates(allocator, source_dir, new_sub, extension, templates);
         } else if (entry.kind == .file and std.mem.endsWith(u8, name, extension)) {
-            const rel_path = if (sub_path.len > 0)
-                try std.fs.path.join(allocator, &.{ sub_path, name })
+            const rel_path = if (out_path.len > 0)
+                try std.fs.path.join(allocator, &.{ out_path, name })
             else
                 name;
 
@@ -128,13 +135,27 @@ fn findTemplates(
 }
 
 fn pathToIdent(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var result = try allocator.alloc(u8, path.len);
+    if (path.len == 0) return try allocator.alloc(u8, 0);
+
+    const first_char = path[0];
+    const needs_prefix = !std.ascii.isAlphabetic(first_char) and first_char != '_';
+
+    const result_len = if (needs_prefix) path.len + 1 else path.len;
+    var result = try allocator.alloc(u8, result_len);
+
+    const offset: usize = if (needs_prefix) blk: {
+        result[0] = '_';
+        break :blk 1;
+    } else 0;
+
+    // escape chars
     for (path, 0..) |c, i| {
-        result[i] = switch (c) {
+        result[i + offset] = switch (c) {
             '/', '\\', '-', '.' => '_',
             else => c,
         };
     }
+
     return result;
 }
 
