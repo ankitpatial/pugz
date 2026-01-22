@@ -24,3 +24,5 @@ block content
     br
     +input_text("lastName", "Last Name", "last name")
     submit sumit
+    if error
+      +alert_error(error)

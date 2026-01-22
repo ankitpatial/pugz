@@ -1336,21 +1336,26 @@ const Compiler = struct {
             var ident_buf: [64]u8 = undefined;
             const safe_param = escapeIdent(param, &ident_buf);
 
-            try self.writeIndent();
             if (i < call.args.len) {
                 // Argument provided
                 const arg = call.args[i];
                 // Check if it's a string literal
                 if (arg.len >= 2 and (arg[0] == '"' or arg[0] == '\'')) {
+                    try self.writeIndent();
                     try self.writer.print("const {s} = {s};\n", .{ safe_param, arg });
                 } else {
                     // It's a variable reference
                     var accessor_buf: [512]u8 = undefined;
                     const accessor = self.buildAccessor(arg, &accessor_buf);
-                    try self.writer.print("const {s} = {s};\n", .{ safe_param, accessor });
+                    // Skip declaration if accessor equals param name (already in scope)
+                    if (!std.mem.eql(u8, accessor, safe_param)) {
+                        try self.writeIndent();
+                        try self.writer.print("const {s} = {s};\n", .{ safe_param, accessor });
+                    }
                 }
             } else if (i < mixin_def.defaults.len) {
                 // Use default value
+                try self.writeIndent();
                 if (mixin_def.defaults[i]) |default| {
                     try self.writer.print("const {s} = {s};\n", .{ safe_param, default });
                 } else {
@@ -1358,6 +1363,7 @@ const Compiler = struct {
                 }
             } else {
                 // No value - use empty string
+                try self.writeIndent();
                 try self.writer.print("const {s} = \"\";\n", .{safe_param});
             }
         }
