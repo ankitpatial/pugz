@@ -6,11 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It implements Pug 3 syntax for indentation-based HTML templating with a focus on server-side rendering.
 
+## Rules
+- don not auto commit, user will do it.
+
 ## Build Commands
 
 - `zig build` - Build the project (output in `zig-out/`)
 - `zig build test` - Run all tests
 - `zig build bench-compiled` - Run compiled templates benchmark (compare with Pug.js)
+- `zig build bench-interpreted` - Inpterpret trmplates
 
 ## Architecture Overview
 
