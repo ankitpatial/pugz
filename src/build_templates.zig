@@ -65,7 +65,7 @@ const TemplateGenStep = struct {
         const b = step.owner;
         const allocator = b.allocator;
 
-        var templates = std.ArrayListUnmanaged(TemplateInfo){};
+        var templates = std.ArrayList(TemplateInfo){};
         defer templates.deinit(allocator);
         try findTemplates(allocator, self.options.source_dir, "", self.options.extension, &templates);
 
@@ -86,7 +86,7 @@ fn findTemplates(
     base_dir: []const u8,
     sub_path: []const u8,
     extension: []const u8,
-    templates: *std.ArrayListUnmanaged(TemplateInfo),
+    templates: *std.ArrayList(TemplateInfo),
 ) !void {
     const full_path = if (sub_path.len > 0)
         try std.fs.path.join(allocator, &.{ base_dir, sub_path })
@@ -144,7 +144,7 @@ fn generateSingleFile(
     out_path: []const u8,
     templates: []const TemplateInfo,
 ) !void {
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = std.ArrayList(u8){};
     defer out.deinit(allocator);
 
     const w = out.writer(allocator);
@@ -255,7 +255,7 @@ fn generateSingleFile(
 
 fn compileTemplate(
     allocator: std.mem.Allocator,
-    w: std.ArrayListUnmanaged(u8).Writer,
+    w: std.ArrayList(u8).Writer,
     name: []const u8,
     source: []const u8,
 ) !void {
@@ -381,12 +381,12 @@ fn nodeHasDynamic(node: ast.Node) bool {
 
 const Compiler = struct {
     allocator: std.mem.Allocator,
-    writer: std.ArrayListUnmanaged(u8).Writer,
-    buf: std.ArrayListUnmanaged(u8), // Buffer for merging static strings
+    writer: std.ArrayList(u8).Writer,
+    buf: std.ArrayList(u8), // Buffer for merging static strings
     depth: usize,
-    loop_vars: std.ArrayListUnmanaged([]const u8), // Track loop variable names
+    loop_vars: std.ArrayList([]const u8), // Track loop variable names
 
-    fn init(allocator: std.mem.Allocator, writer: std.ArrayListUnmanaged(u8).Writer) Compiler {
+    fn init(allocator: std.mem.Allocator, writer: std.ArrayList(u8).Writer) Compiler {
         return .{
             .allocator = allocator,
             .writer = writer,

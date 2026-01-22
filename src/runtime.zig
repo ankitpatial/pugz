@@ -128,7 +128,7 @@ pub const Context = struct {
     allocator: std.mem.Allocator,
     /// Stack of variable scopes (innermost last).
     /// We keep all scopes allocated and track active depth with scope_depth.
-    scopes: std.ArrayListUnmanaged(std.StringHashMapUnmanaged(Value)),
+    scopes: std.ArrayList(std.StringHashMapUnmanaged(Value)),
     /// Current active scope depth (scopes[0..scope_depth] are active).
     scope_depth: usize,
     /// Mixin definitions available in this context.
@@ -242,7 +242,7 @@ const BlockDef = struct {
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     context: *Context,
-    output: std.ArrayListUnmanaged(u8),
+    output: std.ArrayList(u8),
     depth: usize,
     options: Options,
     /// File resolver for loading external templates.
@@ -431,7 +431,7 @@ pub const Runtime = struct {
         }
 
         // Collect all classes: shorthand classes + class attributes (may be arrays)
-        var all_classes = std.ArrayListUnmanaged(u8).empty;
+        var all_classes = std.ArrayList(u8).empty;
         defer all_classes.deinit(self.allocator);
 
         // Add shorthand classes first (e.g., .bang)
@@ -1580,7 +1580,7 @@ fn parseArrayToSpaceSeparated(allocator: std.mem.Allocator, input: []const u8) !
     const content = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\n\r");
     if (content.len == 0) return "";
 
-    var result = std.ArrayListUnmanaged(u8).empty;
+    var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
     var pos: usize = 0;
@@ -1643,7 +1643,7 @@ fn parseObjectToCSS(allocator: std.mem.Allocator, input: []const u8) ![]const u8
     const content = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\n\r");
     if (content.len == 0) return "";
 
-    var result = std.ArrayListUnmanaged(u8).empty;
+    var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
     var pos: usize = 0;

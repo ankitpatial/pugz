@@ -55,7 +55,7 @@ const whitespace_sensitive = std.StaticStringMap(void).initComptime(.{
 pub const CodeGen = struct {
     allocator: std.mem.Allocator,
     options: Options,
-    output: std.ArrayListUnmanaged(u8),
+    output: std.ArrayList(u8),
     depth: usize,
     /// Track if we're inside a whitespace-sensitive element.
     preserve_whitespace: bool,

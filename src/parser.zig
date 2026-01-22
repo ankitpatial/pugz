@@ -54,7 +54,7 @@ pub const Parser = struct {
 
     /// Parses all tokens and returns the document AST.
     pub fn parse(self: *Parser) Error!ast.Document {
-        var nodes = std.ArrayListUnmanaged(Node).empty;
+        var nodes = std.ArrayList(Node).empty;
         errdefer nodes.deinit(self.allocator);
 
         var extends_path: ?[]const u8 = null;
@@ -122,9 +122,9 @@ pub const Parser = struct {
     /// Parses an HTML element with optional tag, classes, id, attributes, and children.
     fn parseElement(self: *Parser) Error!Node {
         var tag: []const u8 = "div"; // default tag
-        var classes = std.ArrayListUnmanaged([]const u8).empty;
+        var classes = std.ArrayList([]const u8).empty;
         var id: ?[]const u8 = null;
-        var attributes = std.ArrayListUnmanaged(Attribute).empty;
+        var attributes = std.ArrayList(Attribute).empty;
         var spread_attributes: ?[]const u8 = null;
         var self_closing = false;
 
@@ -174,7 +174,7 @@ pub const Parser = struct {
             self.skipWhitespace();
 
             // Parse the inline nested element
-            var children = std.ArrayListUnmanaged(Node).empty;
+            var children = std.ArrayList(Node).empty;
             errdefer children.deinit(self.allocator);
 
             if (try self.parseNode()) |child| {
@@ -223,7 +223,7 @@ pub const Parser = struct {
                 _ = self.advance();
                 const raw_content = try self.parseRawTextBlock();
 
-                var children = std.ArrayListUnmanaged(Node).empty;
+                var children = std.ArrayList(Node).empty;
                 errdefer children.deinit(self.allocator);
                 try children.append(self.allocator, .{ .raw_text = .{ .content = raw_content } });
 
@@ -245,7 +245,7 @@ pub const Parser = struct {
         self.skipNewlines();
 
         // Parse children if indented
-        var children = std.ArrayListUnmanaged(Node).empty;
+        var children = std.ArrayList(Node).empty;
         errdefer children.deinit(self.allocator);
 
         if (self.check(.indent)) {
@@ -267,7 +267,7 @@ pub const Parser = struct {
     }
 
     /// Parses attributes within parentheses.
-    fn parseAttributes(self: *Parser, attributes: *std.ArrayListUnmanaged(Attribute)) Error!void {
+    fn parseAttributes(self: *Parser, attributes: *std.ArrayList(Attribute)) Error!void {
         while (!self.check(.rparen) and !self.isAtEnd()) {
             // Skip commas
             if (self.check(.comma)) {
@@ -302,7 +302,7 @@ pub const Parser = struct {
 
     /// Parses text segments (literals and interpolations).
     fn parseTextSegments(self: *Parser) Error![]TextSegment {
-        var segments = std.ArrayListUnmanaged(TextSegment).empty;
+        var segments = std.ArrayList(TextSegment).empty;
         errdefer segments.deinit(self.allocator);
 
         while (self.check(.text) or self.check(.interp_start) or self.check(.interp_start_unesc) or self.check(.tag_interp_start)) {
@@ -338,9 +338,9 @@ pub const Parser = struct {
         _ = self.advance(); // skip #[
 
         var tag: []const u8 = "span"; // default tag
-        var classes = std.ArrayListUnmanaged([]const u8).empty;
+        var classes = std.ArrayList([]const u8).empty;
         var id: ?[]const u8 = null;
-        var attributes = std.ArrayListUnmanaged(Attribute).empty;
+        var attributes = std.ArrayList(Attribute).empty;
 
         errdefer classes.deinit(self.allocator);
         errdefer attributes.deinit(self.allocator);
@@ -369,7 +369,7 @@ pub const Parser = struct {
         }
 
         // Parse inner text segments (may contain nested interpolations)
-        var text_segments = std.ArrayListUnmanaged(TextSegment).empty;
+        var text_segments = std.ArrayList(TextSegment).empty;
         errdefer text_segments.deinit(self.allocator);
 
         while (!self.check(.tag_interp_end) and !self.check(.newline) and !self.isAtEnd()) {
@@ -415,7 +415,7 @@ pub const Parser = struct {
     }
 
     /// Parses children within an indented block.
-    fn parseChildren(self: *Parser, children: *std.ArrayListUnmanaged(Node)) Error!void {
+    fn parseChildren(self: *Parser, children: *std.ArrayList(Node)) Error!void {
         while (!self.check(.dedent) and !self.isAtEnd()) {
             self.skipNewlines();
             if (self.check(.dedent) or self.isAtEnd()) break;
@@ -433,7 +433,7 @@ pub const Parser = struct {
 
     /// Parses a raw text block (after `.`).
     fn parseRawTextBlock(self: *Parser) Error![]const u8 {
-        var lines = std.ArrayListUnmanaged(u8).empty;
+        var lines = std.ArrayList(u8).empty;
         errdefer lines.deinit(self.allocator);
 
         while (!self.check(.dedent) and !self.isAtEnd()) {
@@ -470,7 +470,7 @@ pub const Parser = struct {
 
     /// Parses conditional (if/else if/else/unless).
     fn parseConditional(self: *Parser) Error!Node {
-        var branches = std.ArrayListUnmanaged(ast.Conditional.Branch).empty;
+        var branches = std.ArrayList(ast.Conditional.Branch).empty;
         errdefer branches.deinit(self.allocator);
 
         // Parse initial if/unless
@@ -483,7 +483,7 @@ pub const Parser = struct {
         self.skipNewlines();
 
         // Parse body
-        var body = std.ArrayListUnmanaged(Node).empty;
+        var body = std.ArrayList(Node).empty;
         errdefer body.deinit(self.allocator);
 
         if (self.check(.indent)) {
@@ -512,7 +512,7 @@ pub const Parser = struct {
 
             self.skipNewlines();
 
-            var else_body = std.ArrayListUnmanaged(Node).empty;
+            var else_body = std.ArrayList(Node).empty;
             errdefer else_body.deinit(self.allocator);
 
             if (self.check(.indent)) {
@@ -590,7 +590,7 @@ pub const Parser = struct {
         self.skipNewlines();
 
         // Parse body
-        var body = std.ArrayListUnmanaged(Node).empty;
+        var body = std.ArrayList(Node).empty;
         errdefer body.deinit(self.allocator);
 
         if (self.check(.indent)) {
@@ -599,7 +599,7 @@ pub const Parser = struct {
         }
 
         // Check for else branch
-        var else_children = std.ArrayListUnmanaged(Node).empty;
+        var else_children = std.ArrayList(Node).empty;
         errdefer else_children.deinit(self.allocator);
 
         if (self.check(.kw_else)) {
@@ -629,7 +629,7 @@ pub const Parser = struct {
 
         self.skipNewlines();
 
-        var body = std.ArrayListUnmanaged(Node).empty;
+        var body = std.ArrayList(Node).empty;
         errdefer body.deinit(self.allocator);
 
         if (self.check(.indent)) {
@@ -651,10 +651,10 @@ pub const Parser = struct {
 
         self.skipNewlines();
 
-        var whens = std.ArrayListUnmanaged(ast.Case.When).empty;
+        var whens = std.ArrayList(ast.Case.When).empty;
         errdefer whens.deinit(self.allocator);
 
-        var default_children = std.ArrayListUnmanaged(Node).empty;
+        var default_children = std.ArrayList(Node).empty;
         errdefer default_children.deinit(self.allocator);
 
         // Parse indented when/default clauses
@@ -675,7 +675,7 @@ pub const Parser = struct {
                         value = try self.parseRestOfLine();
                     }
 
-                    var when_children = std.ArrayListUnmanaged(Node).empty;
+                    var when_children = std.ArrayList(Node).empty;
                     errdefer when_children.deinit(self.allocator);
                     var has_break = false;
 
@@ -778,8 +778,8 @@ pub const Parser = struct {
         }
 
         // Parse parameters if present
-        var params = std.ArrayListUnmanaged([]const u8).empty;
-        var defaults = std.ArrayListUnmanaged(?[]const u8).empty;
+        var params = std.ArrayList([]const u8).empty;
+        var defaults = std.ArrayList(?[]const u8).empty;
         errdefer params.deinit(self.allocator);
         errdefer defaults.deinit(self.allocator);
 
@@ -830,7 +830,7 @@ pub const Parser = struct {
         self.skipNewlines();
 
         // Parse body
-        var body = std.ArrayListUnmanaged(Node).empty;
+        var body = std.ArrayList(Node).empty;
         errdefer body.deinit(self.allocator);
 
         if (self.check(.indent)) {
@@ -851,8 +851,8 @@ pub const Parser = struct {
     fn parseMixinCall(self: *Parser) Error!Node {
         const name = self.advance().value; // +name
 
-        var args = std.ArrayListUnmanaged([]const u8).empty;
-        var attributes = std.ArrayListUnmanaged(Attribute).empty;
+        var args = std.ArrayList([]const u8).empty;
+        var attributes = std.ArrayList(Attribute).empty;
         errdefer args.deinit(self.allocator);
         errdefer attributes.deinit(self.allocator);
 
@@ -894,7 +894,7 @@ pub const Parser = struct {
         self.skipNewlines();
 
         // Parse block content
-        var block_children = std.ArrayListUnmanaged(Node).empty;
+        var block_children = std.ArrayList(Node).empty;
         errdefer block_children.deinit(self.allocator);
 
         if (self.check(.indent)) {
@@ -979,7 +979,7 @@ pub const Parser = struct {
         self.skipNewlines();
 
         // Parse body
-        var body = std.ArrayListUnmanaged(Node).empty;
+        var body = std.ArrayList(Node).empty;
         errdefer body.deinit(self.allocator);
 
         if (self.check(.indent)) {
@@ -1011,7 +1011,7 @@ pub const Parser = struct {
         self.skipNewlines();
 
         // Parse body
-        var body = std.ArrayListUnmanaged(Node).empty;
+        var body = std.ArrayList(Node).empty;
         errdefer body.deinit(self.allocator);
 
         if (self.check(.indent)) {
@@ -1052,7 +1052,7 @@ pub const Parser = struct {
         self.skipNewlines();
 
         // Parse nested comment content
-        var children = std.ArrayListUnmanaged(Node).empty;
+        var children = std.ArrayList(Node).empty;
         errdefer children.deinit(self.allocator);
 
         if (self.check(.indent)) {
@@ -1091,7 +1091,7 @@ pub const Parser = struct {
 
     /// Parses rest of line as text.
     fn parseRestOfLine(self: *Parser) Error![]const u8 {
-        var result = std.ArrayListUnmanaged(u8).empty;
+        var result = std.ArrayList(u8).empty;
         errdefer result.deinit(self.allocator);
 
         while (!self.check(.newline) and !self.check(.indent) and !self.check(.dedent) and !self.isAtEnd()) {

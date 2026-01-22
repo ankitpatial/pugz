@@ -29,7 +29,7 @@ pub fn compileDoc(allocator: std.mem.Allocator, name: []const u8, doc: ast.Docum
 
 const Compiler = struct {
     alloc: std.mem.Allocator,
-    out: std.ArrayListUnmanaged(u8),
+    out: std.ArrayList(u8),
     depth: u8,
 
     fn init(allocator: std.mem.Allocator) Compiler {
