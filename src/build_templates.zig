@@ -198,12 +198,26 @@ fn generateSingleFile(
         \\
         \\fn strVal(v: anytype) []const u8 {
         \\    const T = @TypeOf(v);
-        \\    return switch (@typeInfo(T)) {
-        \\        .pointer => |p| if (p.size == .slice) v else @compileError("unsupported pointer type"),
-        \\        .int, .comptime_int => std.fmt.bufPrint(&int_buf, "{d}", .{v}) catch "0",
-        \\        .optional => if (v) |val| strVal(val) else "",
+        \\    switch (@typeInfo(T)) {
+        \\        .pointer => |p| switch (p.size) {
+        \\            .slice => return v,
+        \\            .one => {
+        \\                // For pointer-to-array, slice it
+        \\                const child_info = @typeInfo(p.child);
+        \\                if (child_info == .array) {
+        \\                    const arr_info = child_info.array;
+        \\                    const ptr: [*]const arr_info.child = @ptrCast(v);
+        \\                    return ptr[0..arr_info.len];
+        \\                }
+        \\                return strVal(v.*);
+        \\            },
+        \\            else => @compileError("unsupported pointer type"),
+        \\        },
+        \\        .array => @compileError("arrays must be passed by pointer"),
+        \\        .int, .comptime_int => return std.fmt.bufPrint(&int_buf, "{d}", .{v}) catch "0",
+        \\        .optional => return if (v) |val| strVal(val) else "",
         \\        else => @compileError("strVal: unsupported type " ++ @typeName(T)),
-        \\    };
+        \\    }
         \\}
         \\
         \\// ─────────────────────────────────────────────────────────────────────────────
