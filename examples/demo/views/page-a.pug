@@ -19,3 +19,8 @@ block content
       "data": true
     }
   `)
+  form(method="post")
+    +input_text("firstName",  "First Name", "first name")
+    br
+    +input_text("lastName", "Last Name", "last name")
+    submit sumit

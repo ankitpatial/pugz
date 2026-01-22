@@ -1309,7 +1309,7 @@ const Compiler = struct {
 
     fn emitMixinCallWithDef(self: *Compiler, call: ast.MixinCall, mixin_def: ast.MixinDef) anyerror!void {
         // For each mixin parameter, we need to create a local binding
-        // This is complex in compiled mode - we inline the mixin body
+        // Wrap in a scope block to avoid variable name collisions when mixin is called multiple times
 
         // Save current mixin params
         const prev_params_len = self.mixin_params.items.len;
@@ -1323,6 +1323,11 @@ const Compiler = struct {
 
         // Emit local variable declarations for mixin parameters
         try self.flush();
+
+        // Open scope block for mixin variables
+        try self.writeIndent();
+        try self.writer.writeAll("{\n");
+        self.depth += 1;
 
         for (mixin_def.params[0..regular_params], 0..) |param, i| {
             try self.mixin_params.append(self.allocator, param);
@@ -1386,6 +1391,12 @@ const Compiler = struct {
                 try self.emitNode(child);
             }
         }
+
+        // Close scope block
+        try self.flush();
+        self.depth -= 1;
+        try self.writeIndent();
+        try self.writer.writeAll("}\n");
     }
 
     /// Try to load a mixin from the mixins directory
