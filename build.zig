@@ -1,11 +1,15 @@
 const std = @import("std");
 
+// Re-export build_templates for use by dependent packages
+pub const build_templates = @import("src/build_templates.zig");
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const mod = b.addModule("pugz", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .optimize = optimize,
     });
 
     // Creates an executable that will run `test` blocks from the provided module.
@@ -78,101 +82,62 @@ pub fn build(b: *std.Build) void {
     test_unit_step.dependOn(&run_mod_tests.step);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Example: demo - Template Inheritance Demo with http.zig
+    // Compiled Templates Benchmark (compare with Pug.js bench.js)
+    // Uses auto-generated templates from src/benchmarks/templates/
     // ─────────────────────────────────────────────────────────────────────────
-    const httpz_dep = b.dependency("httpz", .{
+    const mod_fast = b.addModule("pugz-fast", .{
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = .ReleaseFast,
     });
 
-    const demo = b.addExecutable(.{
-        .name = "demo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/demo/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "pugz", .module = mod },
-                .{ .name = "httpz", .module = httpz_dep.module("httpz") },
-            },
-        }),
+    const bench_templates = build_templates.compileTemplates(b, .{
+        .source_dir = "src/benchmarks/templates",
     });
 
-    b.installArtifact(demo);
-
-    const run_demo = b.addRunArtifact(demo);
-    run_demo.step.dependOn(b.getInstallStep());
-
-    const demo_step = b.step("demo", "Run the template inheritance demo web app");
-    demo_step.dependOn(&run_demo.step);
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Benchmark executable
-    // ─────────────────────────────────────────────────────────────────────────
-    const bench = b.addExecutable(.{
-        .name = "bench",
+    const bench_compiled = b.addExecutable(.{
+        .name = "bench-compiled",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmarks/benchmark.zig"),
-            .target = target,
-            .optimize = .ReleaseFast, // Always use ReleaseFast for benchmarks
-            .imports = &.{
-                .{ .name = "pugz", .module = mod },
-            },
-        }),
-    });
-
-    b.installArtifact(bench);
-
-    const run_bench = b.addRunArtifact(bench);
-    run_bench.step.dependOn(b.getInstallStep());
-
-    const bench_step = b.step("bench", "Run rendering benchmarks");
-    bench_step.dependOn(&run_bench.step);
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Comparison Benchmark Tests (template-engine-bench templates)
-    // Run all:      zig build test-bench
-    // Run one:      zig build test-bench -- simple-0
-    // ─────────────────────────────────────────────────────────────────────────
-    const bench_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmarks/benchmark_2.zig"),
+            .root_source_file = b.path("src/benchmarks/bench.zig"),
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "pugz", .module = mod },
+                .{ .name = "pugz", .module = mod_fast },
+                .{ .name = "tpls", .module = bench_templates },
             },
         }),
-        .filters = if (b.args) |args| args else &.{},
     });
 
-    const run_bench_tests = b.addRunArtifact(bench_tests);
+    b.installArtifact(bench_compiled);
 
-    const bench_test_step = b.step("bench-2", "Run comparison benchmarks (template-engine-bench)");
-    bench_test_step.dependOn(&run_bench_tests.step);
+    const run_bench_compiled = b.addRunArtifact(bench_compiled);
+    run_bench_compiled.step.dependOn(b.getInstallStep());
+
+    const bench_compiled_step = b.step("bench-compiled", "Benchmark compiled templates (compare with Pug.js)");
+    bench_compiled_step.dependOn(&run_bench_compiled.step);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Profile executable (for CPU profiling)
+    // Interpreted (Runtime) Benchmark
     // ─────────────────────────────────────────────────────────────────────────
-    const profile = b.addExecutable(.{
-        .name = "profile",
+    const bench_interpreted = b.addExecutable(.{
+        .name = "bench-interpreted",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmarks/profile_friends.zig"),
+            .root_source_file = b.path("src/benchmarks/bench_interpreted.zig"),
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "pugz", .module = mod },
+                .{ .name = "pugz", .module = mod_fast },
             },
         }),
     });
 
-    b.installArtifact(profile);
+    b.installArtifact(bench_interpreted);
 
-    const run_profile = b.addRunArtifact(profile);
-    run_profile.step.dependOn(b.getInstallStep());
+    const run_bench_interpreted = b.addRunArtifact(bench_interpreted);
+    run_bench_interpreted.step.dependOn(b.getInstallStep());
 
-    const profile_step = b.step("profile", "Run friends template for profiling");
-    profile_step.dependOn(&run_profile.step);
+    const bench_interpreted_step = b.step("bench-interpreted", "Benchmark interpreted (runtime) templates");
+    bench_interpreted_step.dependOn(&run_bench_interpreted.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
