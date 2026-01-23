@@ -10,6 +10,7 @@ Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It implements Pug
 - Do not auto commit, user will do it.
 - At the start of each new session, read this CLAUDE.md file to understand project context and rules.
 - When the user specifies a new rule, update this CLAUDE.md file to include it.
+- Code comments are required but must be meaningful, not bloated. Focus on explaining "why" not "what". Avoid obvious comments like "// increment counter" - instead explain complex logic, non-obvious decisions, or tricky edge cases.
 
 ## Build Commands
 

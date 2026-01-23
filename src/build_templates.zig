@@ -1,17 +1,24 @@
 //! Pugz Build Step - Compile .pug templates to Zig code at build time.
 //!
-//! Generates a single `generated.zig` file in the views folder containing:
-//! - Shared helper functions (esc, truthy)
-//! - All compiled template render functions
+//! This module transforms .pug template files into native Zig functions during the build process.
+//! The generated code runs ~3x faster than interpreted templates by eliminating runtime parsing.
 //!
-//! Supports full Pugz features:
-//! - Template inheritance (extends/block)
-//! - Mixins (definitions and calls)
-//! - Includes
-//! - Case/when statements
-//! - Conditionals (if/else if/else/unless)
-//! - Iteration (each)
-//! - All element features (classes, ids, attributes, interpolation)
+//! ## Architecture
+//!
+//! The compilation pipeline:
+//! 1. `compileTemplates()` - Entry point, creates a build step that produces a Zig module
+//! 2. `CompileTemplatesStep` - Build step that orchestrates template discovery and compilation
+//! 3. `findTemplates()` - Recursively walks source_dir to find all .pug files
+//! 4. `generateSingleFile()` - Creates generated.zig with helper functions and all templates
+//! 5. `Compiler` - Core compiler that transforms AST nodes into Zig code
+//!
+//! ## Generated Output
+//!
+//! The generated.zig file contains:
+//! - Shared helpers: `esc()` (HTML escaping), `truthy()` (boolean coercion), `strVal()` (type conversion)
+//! - One public function per template, named after the file path (e.g., pages/home.pug -> pages_home())
+//! - Static string merging for consecutive literals (reduces allocations)
+//! - Zero-allocation rendering for fully static templates
 //!
 //! ## Usage in build.zig:
 //! ```zig
@@ -34,11 +41,15 @@ const Parser = @import("parser.zig").Parser;
 const ast = @import("ast.zig");
 
 pub const Options = struct {
+    /// Root directory containing .pug template files (searched recursively)
     source_dir: []const u8 = "views",
+    /// File extension for template files
     extension: []const u8 = ".pug",
 };
 
-/// Pre compile templates from source_dir/*.pug to source_dir/generated.zig to avoid lexer/parser phase on render.
+/// Creates a build module containing compiled templates.
+/// Call this from build.zig to integrate template compilation into your build.
+/// Returns a module that can be imported as "templates" (or any name you choose).
 pub fn compileTemplates(b: *std.Build, options: Options) *std.Build.Module {
     const step = CompileTemplatesStep.create(b, options);
     return b.createModule(.{
@@ -46,6 +57,8 @@ pub fn compileTemplates(b: *std.Build, options: Options) *std.Build.Module {
     });
 }
 
+/// Build step that discovers and compiles all .pug templates in source_dir.
+/// Outputs a single generated.zig file containing all template functions.
 const CompileTemplatesStep = struct {
     step: std.Build.Step,
     options: Options,
@@ -93,12 +106,16 @@ const CompileTemplatesStep = struct {
     }
 };
 
+/// Metadata for a discovered template file
 const TemplateInfo = struct {
+    /// Path relative to source_dir (e.g., "pages/home.pug")
     rel_path: []const u8,
+    /// Valid Zig identifier derived from path (e.g., "pages_home")
     zig_name: []const u8,
 };
 
-/// Walk source directory recursively to find pug files
+/// Recursively walks source_dir to discover all .pug template files.
+/// Populates the templates list with path and generated function name for each file.
 fn findTemplates(
     allocator: std.mem.Allocator,
     source_dir: []const u8,
@@ -144,6 +161,9 @@ fn findTemplates(
     }
 }
 
+/// Converts a file path to a valid Zig identifier.
+/// Replaces path separators and special chars with underscores.
+/// Prefixes with '_' if the path starts with a digit.
 fn pathToIdent(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (path.len == 0) return try allocator.alloc(u8, 0);
 
@@ -158,7 +178,6 @@ fn pathToIdent(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
         break :blk 1;
     } else 0;
 
-    // escape chars
     for (path, 0..) |c, i| {
         result[i + offset] = switch (c) {
             '/', '\\', '-', '.' => '_',
@@ -169,12 +188,15 @@ fn pathToIdent(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return result;
 }
 
-/// Block definition for template inheritance
+/// Block content from child template, used during inheritance resolution.
+/// Stores the mode (replace/append/prepend) and child nodes.
 const BlockDef = struct {
     mode: ast.Block.Mode,
     children: []const ast.Node,
 };
 
+/// Generates the complete generated.zig file containing all compiled templates.
+/// Writes helper functions at the top, followed by each template as a public function.
 fn generateSingleFile(
     allocator: std.mem.Allocator,
     source_dir: []const u8,
@@ -294,6 +316,11 @@ fn generateSingleFile(
     try file.writeAll(out.items);
 }
 
+/// Compiles a single .pug template into a Zig function.
+/// Handles three cases:
+/// - Empty templates: return ""
+/// - Static-only templates: return literal string (zero allocation)
+/// - Dynamic templates: use ArrayList and return o.items
 fn compileTemplate(
     allocator: std.mem.Allocator,
     w: std.ArrayList(u8).Writer,
@@ -315,13 +342,12 @@ fn compileTemplate(
         return err;
     };
 
-    // Create compiler with template resolution context
     var compiler = Compiler.init(allocator, w, source_dir, extension);
 
-    // Handle template inheritance - resolve extends chain
+    // Resolve extends/block inheritance chain before emission
     const resolved_nodes = try compiler.resolveInheritance(doc);
 
-    // Check if template has content after resolution
+    // Determine template characteristics for optimal code generation
     var has_content = false;
     for (resolved_nodes) |node| {
         if (nodeHasOutput(node)) {
@@ -330,7 +356,6 @@ fn compileTemplate(
         }
     }
 
-    // Check if template has any dynamic content
     var has_dynamic = false;
     for (resolved_nodes) |node| {
         if (nodeHasDynamic(node)) {
@@ -339,14 +364,15 @@ fn compileTemplate(
         }
     }
 
+    // Generate function signature: pub fn name(a: Allocator, d: anytype) ![]u8
     try w.print("pub fn {s}(a: Allocator, d: anytype) Allocator.Error![]u8 {{\n", .{name});
 
     if (!has_content) {
-        // Empty template (mixin definitions only, etc.)
+        // Empty template (e.g., mixin-only files)
         try w.writeAll("    _ = .{ a, d };\n");
         try w.writeAll("    return \"\";\n");
     } else if (!has_dynamic) {
-        // Static-only template - return literal string, no allocation
+        // Static-only: return string literal directly, no heap allocation needed
         try w.writeAll("    _ = .{ a, d };\n");
         try w.writeAll("    return ");
         for (resolved_nodes) |node| {
@@ -354,7 +380,7 @@ fn compileTemplate(
         }
         try compiler.flushAsReturn();
     } else {
-        // Dynamic template - needs ArrayList
+        // Dynamic: build output incrementally with ArrayList
         try w.writeAll("    var o: ArrayList = .empty;\n");
 
         for (resolved_nodes) |node| {
@@ -362,7 +388,7 @@ fn compileTemplate(
         }
         try compiler.flush();
 
-        // If 'd' parameter wasn't used, discard it to avoid unused parameter error
+        // Suppress unused parameter warning if data wasn't accessed
         if (!compiler.uses_data) {
             try w.writeAll("    _ = d;\n");
         }
@@ -373,6 +399,7 @@ fn compileTemplate(
     try w.writeAll("}\n\n");
 }
 
+/// Checks if a node produces any HTML output (used to detect empty templates)
 fn nodeHasOutput(node: ast.Node) bool {
     return switch (node) {
         .doctype, .element, .text, .raw_text, .comment => true,
@@ -419,6 +446,8 @@ fn nodeHasOutput(node: ast.Node) bool {
     };
 }
 
+/// Checks if a node contains dynamic content requiring runtime evaluation
+/// (interpolation, conditionals, loops, mixin calls)
 fn nodeHasDynamic(node: ast.Node) bool {
     return switch (node) {
         .element => |e| blk: {
@@ -458,7 +487,8 @@ fn nodeHasDynamic(node: ast.Node) bool {
     };
 }
 
-/// Zig reserved keywords that need escaping with @"..."
+/// Zig reserved keywords - field names matching these must be escaped with @"..."
+/// when used in generated code (e.g., @"type" instead of type)
 const zig_keywords = std.StaticStringMap(void).initComptime(.{
     .{ "addrspace", {} },
     .{ "align", {} },
@@ -516,7 +546,7 @@ const zig_keywords = std.StaticStringMap(void).initComptime(.{
     .{ "while", {} },
 });
 
-/// Returns the identifier escaped if it's a Zig keyword
+/// Escapes identifier if it's a Zig keyword by wrapping in @"..."
 fn escapeIdent(ident: []const u8, buf: []u8) []const u8 {
     if (zig_keywords.has(ident)) {
         return std.fmt.bufPrint(buf, "@\"{s}\"", .{ident}) catch ident;
@@ -524,21 +554,28 @@ fn escapeIdent(ident: []const u8, buf: []u8) []const u8 {
     return ident;
 }
 
+/// Core compiler that transforms AST nodes into Zig source code.
+/// Maintains state for:
+/// - Static string buffering (merges consecutive literals into single appendSlice)
+/// - Loop variable tracking (to distinguish loop vars from data fields)
+/// - Mixin parameter tracking (for proper scoping)
+/// - Template inheritance (blocks from child templates)
+/// - Mixin definitions (collected during parsing for later calls)
 const Compiler = struct {
     allocator: std.mem.Allocator,
     writer: std.ArrayList(u8).Writer,
     source_dir: []const u8,
     extension: []const u8,
-    buf: std.ArrayList(u8), // Buffer for merging static strings
-    depth: usize,
-    loop_vars: std.ArrayList([]const u8), // Track loop variable names
-    mixin_params: std.ArrayList([]const u8), // Track current mixin parameter names
-    mixins: std.StringHashMap(ast.MixinDef), // Collected mixin definitions
-    blocks: std.StringHashMap(BlockDef), // Collected block definitions for inheritance
-    uses_data: bool, // Track whether the data parameter 'd' is actually used
-    mixin_depth: usize, // Track nesting depth for unique variable names
-    current_attrs_var: ?[]const u8, // Current mixin's attributes variable name
-    used_attrs_var: bool, // Track if current mixin's attributes were accessed
+    buf: std.ArrayList(u8), // Accumulates static strings for batch output
+    depth: usize, // Current indentation level in generated code
+    loop_vars: std.ArrayList([]const u8), // Active loop variable names (for each loops)
+    mixin_params: std.ArrayList([]const u8), // Current mixin's parameter names
+    mixins: std.StringHashMap(ast.MixinDef), // All discovered mixin definitions
+    blocks: std.StringHashMap(BlockDef), // Child template block overrides
+    uses_data: bool, // True if template accesses the data parameter 'd'
+    mixin_depth: usize, // Nesting level for generating unique mixin variable names
+    current_attrs_var: ?[]const u8, // Variable name for current mixin's &attributes
+    used_attrs_var: bool, // True if current mixin accessed its attributes
 
     fn init(
         allocator: std.mem.Allocator,
@@ -564,58 +601,48 @@ const Compiler = struct {
         };
     }
 
-    /// Resolves template inheritance by loading parent templates and merging blocks
+    /// Resolves template inheritance chain (extends keyword).
+    /// Walks up the inheritance chain collecting blocks, then returns the root template's nodes.
+    /// Block overrides are stored in self.blocks and applied during emitBlock().
     fn resolveInheritance(self: *Compiler, doc: ast.Document) ![]const ast.Node {
-        // First, collect all mixin definitions from this template
         try self.collectMixins(doc.nodes);
 
-        // Check if this template extends another
         if (doc.extends_path) |extends_path| {
-            // Collect blocks from child template
+            // Child template: collect its block overrides
             try self.collectBlocks(doc.nodes);
 
-            // Load and parse parent template
+            // Load parent and recursively resolve (parent may also extend)
             const parent_doc = try self.loadTemplate(extends_path);
-
-            // Collect mixins from parent too
             try self.collectMixins(parent_doc.nodes);
-
-            // Recursively resolve parent's inheritance
             return try self.resolveInheritance(parent_doc);
         }
 
-        // No extends - return nodes as-is (blocks will be resolved during emission)
+        // Root template: return its nodes (blocks resolved during emission)
         return doc.nodes;
     }
 
-    /// Collects mixin definitions from nodes
+    /// Recursively collects all mixin definitions from the AST.
+    /// Mixins can be defined anywhere in a template (top-level or nested).
     fn collectMixins(self: *Compiler, nodes: []const ast.Node) !void {
         for (nodes) |node| {
             switch (node) {
-                .mixin_def => |def| {
-                    try self.mixins.put(def.name, def);
-                },
-                .element => |e| {
-                    try self.collectMixins(e.children);
-                },
+                .mixin_def => |def| try self.mixins.put(def.name, def),
+                .element => |e| try self.collectMixins(e.children),
                 .conditional => |c| {
-                    for (c.branches) |br| {
-                        try self.collectMixins(br.children);
-                    }
+                    for (c.branches) |br| try self.collectMixins(br.children);
                 },
                 .each => |e| {
                     try self.collectMixins(e.children);
                     try self.collectMixins(e.else_children);
                 },
-                .block => |b| {
-                    try self.collectMixins(b.children);
-                },
+                .block => |b| try self.collectMixins(b.children),
                 else => {},
             }
         }
     }
 
-    /// Collects block definitions from child template
+    /// Collects block definitions from a child template for inheritance.
+    /// These override or extend the parent template's blocks.
     fn collectBlocks(self: *Compiler, nodes: []const ast.Node) !void {
         for (nodes) |node| {
             switch (node) {
@@ -641,11 +668,10 @@ const Compiler = struct {
         }
     }
 
-    /// Loads and parses a template file
+    /// Loads and parses a template file by path (for extends/include).
+    /// Path can be with or without extension.
     fn loadTemplate(self: *Compiler, path: []const u8) !ast.Document {
-        // Build full path
         const full_path = blk: {
-            // Check if path already has extension
             if (std.mem.endsWith(u8, path, self.extension)) {
                 break :blk try std.fs.path.join(self.allocator, &.{ self.source_dir, path });
             } else {
@@ -674,6 +700,7 @@ const Compiler = struct {
         };
     }
 
+    /// Writes buffered static content as a single appendSlice call and clears the buffer.
     fn flush(self: *Compiler) !void {
         if (self.buf.items.len > 0) {
             try self.writeIndent();
@@ -684,14 +711,15 @@ const Compiler = struct {
         }
     }
 
+    /// Writes buffered static content as a return statement (for static-only templates).
     fn flushAsReturn(self: *Compiler) !void {
-        // For static-only templates - return string literal directly
         try self.writer.writeAll("\"");
         try self.writer.writeAll(self.buf.items);
         try self.writer.writeAll("\";\n");
         self.buf.items.len = 0;
     }
 
+    /// Appends static string content to the buffer, escaping for Zig string literals.
     fn appendStatic(self: *Compiler, s: []const u8) !void {
         for (s) |c| {
             const escaped: []const u8 = switch (c) {
@@ -706,9 +734,8 @@ const Compiler = struct {
         }
     }
 
-    /// Appends string content with normalized whitespace (for backtick template literals).
-    /// Collapses newlines and multiple spaces into single spaces, trims leading/trailing whitespace.
-    /// Also HTML-escapes double quotes to &quot; for valid HTML attribute values.
+    /// Appends string with whitespace normalization (for backtick template literals).
+    /// Collapses newlines/spaces into single spaces, escapes quotes as &quot; for HTML.
     fn appendNormalizedWhitespace(self: *Compiler, s: []const u8) !void {
         var in_whitespace = true; // Start true to skip leading whitespace
         for (s) |c| {
@@ -738,6 +765,7 @@ const Compiler = struct {
         for (0..self.depth) |_| try self.writer.writeAll("    ");
     }
 
+    /// Main dispatch function - emits Zig code for any AST node type.
     fn emitNode(self: *Compiler, node: ast.Node) anyerror!void {
         switch (node) {
             .doctype => |dt| {
@@ -771,10 +799,11 @@ const Compiler = struct {
         }
     }
 
+    /// Emits an HTML element: opening tag, attributes, children, closing tag.
+    /// Handles void elements (self-closing), class merging, and buffered code.
     fn emitElement(self: *Compiler, e: ast.Element) anyerror!void {
         const is_void = isVoidElement(e.tag) or e.self_closing;
 
-        // Open tag
         try self.appendStatic("<");
         try self.appendStatic(e.tag);
 
@@ -839,7 +868,8 @@ const Compiler = struct {
         try self.appendStatic(">");
     }
 
-    /// Emits a merged class attribute combining shorthand classes and class attribute value
+    /// Emits a merged class attribute combining shorthand classes (.foo.bar) with
+    /// dynamic class attribute values. Handles static strings, arrays, and concatenation.
     fn emitMergedClassAttribute(self: *Compiler, shorthand_classes: []const []const u8, attr_value: ?[]const u8, escaped: bool) !void {
         _ = escaped;
 
@@ -974,15 +1004,15 @@ const Compiler = struct {
         try self.appendStatic(">");
     }
 
+    /// Emits code for an interpolated expression (#{expr} or !{expr}).
+    /// Flushes static buffer first since this generates runtime code.
     fn emitExpr(self: *Compiler, expr: []const u8, escaped: bool) !void {
-        try self.flush(); // Dynamic content - flush static buffer first
+        try self.flush();
         try self.writeIndent();
 
-        // Generate the accessor expression
         var accessor_buf: [512]u8 = undefined;
         const accessor = self.buildAccessor(expr, &accessor_buf);
 
-        // Use strVal helper to handle type conversion
         if (escaped) {
             try self.writer.print("try esc(&o, a, strVal({s}));\n", .{accessor});
         } else {
@@ -990,7 +1020,12 @@ const Compiler = struct {
         }
     }
 
-    /// Emits an attribute with its value, handling string concatenation expressions
+    /// Emits an HTML attribute. Handles various value types:
+    /// - String literals (single, double, backtick quoted)
+    /// - Object literals ({color: 'red'} -> style="color:red;")
+    /// - Array literals (['a', 'b'] -> class="a b")
+    /// - String concatenation ("btn-" + type)
+    /// - Dynamic variable references
     fn emitAttribute(self: *Compiler, name: []const u8, value: []const u8, escaped: bool) !void {
         _ = escaped;
 
@@ -1053,7 +1088,8 @@ const Compiler = struct {
         }
     }
 
-    /// Find the + operator for string concatenation, accounting for quoted strings
+    /// Finds the + operator for string concatenation, skipping + chars inside quotes.
+    /// Returns the position of the operator, or null if not found.
     fn findConcatOperator(value: []const u8) ?usize {
         var in_string = false;
         var string_char: u8 = 0;
@@ -1081,9 +1117,9 @@ const Compiler = struct {
         return null;
     }
 
-    /// Emit a concatenation expression like "btn btn-" + type
+    /// Emits code for a string concatenation expression (e.g., "btn btn-" + type).
+    /// Recursively handles chained concatenations.
     fn emitConcatExpr(self: *Compiler, value: []const u8, concat_pos: usize) !void {
-        // Split on the + operator
         const left = std.mem.trim(u8, value[0..concat_pos], " ");
         const right = std.mem.trim(u8, value[concat_pos + 1 ..], " ");
 
@@ -1119,10 +1155,8 @@ const Compiler = struct {
         }
     }
 
-    /// Emit expression inline (for attribute values) - doesn't flush or write indent
+    /// Emits an expression inline (used for dynamic attribute values).
     fn emitExprInline(self: *Compiler, expr: []const u8, escaped: bool) !void {
-        // For now, we need to flush and emit as separate statement
-        // This is a limitation - dynamic attribute values need special handling
         try self.flush();
         try self.writeIndent();
 
@@ -1150,8 +1184,10 @@ const Compiler = struct {
         return false;
     }
 
+    /// Builds a Zig accessor expression for a template variable.
+    /// Handles: loop vars (item), mixin params (text), data fields (@field(d, "name")),
+    /// nested access (user.name), and mixin attributes (attributes.class).
     fn buildAccessor(self: *Compiler, expr: []const u8, buf: []u8) []const u8 {
-        // Handle nested field access like friend.name, subFriend.id, attributes.class
         if (std.mem.indexOfScalar(u8, expr, '.')) |dot| {
             const base = expr[0..dot];
             const rest = expr[dot + 1 ..];
@@ -1226,8 +1262,10 @@ const Compiler = struct {
         try self.writer.writeAll("}\n");
     }
 
+    /// Emits a condition expression for if/else if.
+    /// Handles string comparisons (== "value") and optional field access (@hasField).
     fn emitCondition(self: *Compiler, cond: []const u8) !void {
-        // Handle string equality: status == "closed" -> std.mem.eql(u8, status, "closed")
+        // String equality: status == "closed" -> std.mem.eql(u8, strVal(status), "closed")
         if (std.mem.indexOf(u8, cond, " == \"")) |eq_pos| {
             const lhs = std.mem.trim(u8, cond[0..eq_pos], " ");
             const rhs_start = eq_pos + 5; // skip ' == "'
@@ -1268,28 +1306,26 @@ const Compiler = struct {
         }
     }
 
+    /// Emits code for an each loop (iteration over arrays/slices).
+    /// Handles optional index variable and else branch for empty collections.
     fn emitEach(self: *Compiler, e: ast.Each) anyerror!void {
         try self.flush();
         try self.writeIndent();
 
-        // Track this loop variable
         try self.loop_vars.append(self.allocator, e.value_name);
 
-        // Build accessor for collection
         var accessor_buf: [512]u8 = undefined;
         const collection_accessor = self.buildAccessor(e.collection, &accessor_buf);
 
-        // Check if we need else branch handling
+        // Wrap in length check if there's an else branch
         if (e.else_children.len > 0) {
-            // Need to check length first for else branch
             try self.writer.print("if ({s}.len > 0) {{\n", .{collection_accessor});
             self.depth += 1;
             try self.writeIndent();
         }
 
-        // Generate the for loop - handle optional collections with orelse
+        // Handle optional collections (nested fields may be nullable)
         if (std.mem.indexOfScalar(u8, e.collection, '.')) |_| {
-            // Nested field - may be optional
             try self.writer.print("for (if (@typeInfo(@TypeOf({s})) == .optional) ({s} orelse &.{{}}) else {s}) |{s}", .{ collection_accessor, collection_accessor, collection_accessor, e.value_name });
         } else {
             try self.writer.print("for ({s}) |{s}", .{ collection_accessor, e.value_name });
@@ -1328,14 +1364,14 @@ const Compiler = struct {
         _ = self.loop_vars.pop();
     }
 
+    /// Emits code for a case/when statement (switch-like construct).
+    /// Generates if/else if chain since Zig switch requires comptime values.
     fn emitCase(self: *Compiler, c: ast.Case) anyerror!void {
         try self.flush();
 
-        // Build accessor for the expression
         var accessor_buf: [512]u8 = undefined;
         const expr_accessor = self.buildAccessor(c.expression, &accessor_buf);
 
-        // Generate a series of if/else if statements to match case values
         var first = true;
         for (c.whens) |when| {
             try self.writeIndent();
@@ -1393,8 +1429,9 @@ const Compiler = struct {
         }
     }
 
+    /// Emits a named block, applying any child template overrides.
+    /// Supports replace, append, and prepend modes for inheritance.
     fn emitBlock(self: *Compiler, blk: ast.Block) anyerror!void {
-        // Check if child template overrides this block
         if (self.blocks.get(blk.name)) |child_block| {
             switch (child_block.mode) {
                 .replace => {
@@ -1430,26 +1467,25 @@ const Compiler = struct {
         }
     }
 
+    /// Emits an include directive by inlining the included template's content.
     fn emitInclude(self: *Compiler, inc: ast.Include) anyerror!void {
-        // Load and parse the included template
         const included_doc = self.loadTemplate(inc.path) catch |err| {
             std.log.warn("Failed to load include '{s}': {}", .{ inc.path, err });
             return;
         };
 
-        // Collect mixins from included template
         try self.collectMixins(included_doc.nodes);
 
-        // Emit included content inline
         for (included_doc.nodes) |node| {
             try self.emitNode(node);
         }
     }
 
+    /// Emits a mixin call (+mixinName(args)).
+    /// Looks up the mixin definition, falling back to lazy-loading from mixins/ directory.
     fn emitMixinCall(self: *Compiler, call: ast.MixinCall) anyerror!void {
-        // Look up mixin definition
         const mixin_def = self.mixins.get(call.name) orelse {
-            // Try to load from mixins directory
+            // Lazy-load from mixins/ directory
             if (self.loadMixinFromDir(call.name)) |def| {
                 try self.mixins.put(def.name, def);
                 try self.emitMixinCallWithDef(call, def);
@@ -1462,24 +1498,22 @@ const Compiler = struct {
         try self.emitMixinCallWithDef(call, mixin_def);
     }
 
+    /// Emits the actual mixin body with parameter bindings.
+    /// Creates a scope block with local variables for each mixin parameter.
+    /// Handles default values, rest parameters, block content, and &attributes.
     fn emitMixinCallWithDef(self: *Compiler, call: ast.MixinCall, mixin_def: ast.MixinDef) anyerror!void {
-        // For each mixin parameter, we need to create a local binding
-        // Wrap in a scope block to avoid variable name collisions when mixin is called multiple times
-
-        // Save current mixin params
+        // Save/restore mixin params to handle nested mixin calls
         const prev_params_len = self.mixin_params.items.len;
         defer self.mixin_params.items.len = prev_params_len;
 
-        // Calculate regular params (excluding rest param)
         const regular_params = if (mixin_def.has_rest and mixin_def.params.len > 0)
             mixin_def.params.len - 1
         else
             mixin_def.params.len;
 
-        // Emit local variable declarations for mixin parameters
         try self.flush();
 
-        // Open scope block for mixin variables
+        // Scope block prevents variable name collisions on repeated mixin calls
         try self.writeIndent();
         try self.writer.writeAll("{\n");
         self.depth += 1;
@@ -1631,9 +1665,9 @@ const Compiler = struct {
         self.mixin_depth -= 1;
     }
 
-    /// Try to load a mixin from the mixins directory
+    /// Attempts to load a mixin from the mixins/ subdirectory.
+    /// First tries mixins/{name}.pug, then scans all files in mixins/ for the definition.
     fn loadMixinFromDir(self: *Compiler, name: []const u8) ?ast.MixinDef {
-        // Try specific file first: mixins/{name}.pug
         const specific_path = std.fs.path.join(self.allocator, &.{ self.source_dir, "mixins", name }) catch return null;
         defer self.allocator.free(specific_path);
 
@@ -1670,7 +1704,7 @@ const Compiler = struct {
         return null;
     }
 
-    /// Parse source and extract a specific mixin definition
+    /// Parses template source to find and return a specific mixin definition by name.
     fn parseMixinFromSource(self: *Compiler, source: []const u8, name: []const u8) ?ast.MixinDef {
         var lexer = Lexer.init(self.allocator, source);
         const tokens = lexer.tokenize() catch return null;
@@ -1691,9 +1725,9 @@ const Compiler = struct {
     }
 };
 
-/// Parses a JS object literal and converts it to CSS style string (compile-time).
-/// Input: {color: 'red', background: 'green'}
-/// Output: color:red;background:green;
+/// Parses a JS-style object literal into CSS property string.
+/// Example: {color: 'red', background: 'green'} -> "color:red;background:green;"
+/// Note: Returns slice from static buffer - safe because result is immediately consumed.
 fn parseObjectToCSS(input: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, input, " \t\n\r");
 
@@ -1783,9 +1817,8 @@ fn parseObjectToCSS(input: []const u8) []const u8 {
     return result[0..result_len];
 }
 
-/// Parses a JS object literal and extracts values as space-separated string.
-/// Input: {foo: 'bar', baz: 'qux'}
-/// Output: bar qux
+/// Parses a JS-style object literal and extracts values as space-separated string.
+/// Example: {foo: 'bar', baz: 'qux'} -> "bar qux"
 fn parseObjectToSpaceSeparated(input: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, input, " \t\n\r");
     if (trimmed.len < 2 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') {
@@ -1862,9 +1895,8 @@ fn parseObjectToSpaceSeparated(input: []const u8) []const u8 {
     return result[0..result_len];
 }
 
-/// Parses a JS array literal and extracts values as space-separated string.
-/// Input: ['foo', 'bar', 'baz']
-/// Output: foo bar baz
+/// Parses a JS-style array literal and joins values with spaces.
+/// Example: ['foo', 'bar', 'baz'] -> "foo bar baz"
 fn parseArrayToSpaceSeparated(input: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, input, " \t\n\r");
     if (trimmed.len < 2 or trimmed[0] != '[' or trimmed[trimmed.len - 1] != ']') {
@@ -1929,6 +1961,7 @@ fn parseArrayToSpaceSeparated(input: []const u8) []const u8 {
     return result[0..result_len];
 }
 
+/// Returns true if the tag is a void element (self-closing, no closing tag).
 fn isVoidElement(tag: []const u8) bool {
     const voids = std.StaticStringMap(void).initComptime(.{
         .{ "area", {} },  .{ "base", {} }, .{ "br", {} },    .{ "col", {} },

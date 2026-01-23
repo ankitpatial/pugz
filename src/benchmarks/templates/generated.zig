@@ -102,7 +102,7 @@ pub fn simple_1(a: Allocator, d: anytype) Allocator.Error![]u8 {
     try o.appendSlice(a, "!<strong>You have ");
     try esc(&o, a, strVal(@field(d, "messageCount")));
     try o.appendSlice(a, " messages!</strong></span>");
-    if (truthy(@field(d, "colors"))) {
+    if (@hasField(@TypeOf(d), "colors") and truthy(@field(d, "colors"))) {
         try o.appendSlice(a, "<ul>");
         for (@field(d, "colors")) |color| {
             try o.appendSlice(a, "<li class=\"color\">");
@@ -114,7 +114,7 @@ pub fn simple_1(a: Allocator, d: anytype) Allocator.Error![]u8 {
         try o.appendSlice(a, "<div>No colors!</div>");
     }
     try o.appendSlice(a, "</div>");
-    if (truthy(@field(d, "primary"))) {
+    if (@hasField(@TypeOf(d), "primary") and truthy(@field(d, "primary"))) {
         try o.appendSlice(a, "<button class=\"primary\" type=\"button\">Click me!</button>");
     } else {
         try o.appendSlice(a, "<button class=\"secondary\" type=\"button\">Click me!</button>");
