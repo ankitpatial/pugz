@@ -7,7 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It implements Pug 3 syntax for indentation-based HTML templating with a focus on server-side rendering.
 
 ## Rules
-- don not auto commit, user will do it.
+- Do not auto commit, user will do it.
+- At the start of each new session, read this CLAUDE.md file to understand project context and rules.
+- When the user specifies a new rule, update this CLAUDE.md file to include it.
 
 ## Build Commands
 
