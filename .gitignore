@@ -6,7 +6,7 @@ zig-cache/
 node_modules
 
 # compiled template file
-generated.zig
+#generated.zig
 
 # IDE
 .vscode/

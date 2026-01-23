@@ -702,6 +702,7 @@ const Compiler = struct {
 
     /// Appends string content with normalized whitespace (for backtick template literals).
     /// Collapses newlines and multiple spaces into single spaces, trims leading/trailing whitespace.
+    /// Also HTML-escapes double quotes to &quot; for valid HTML attribute values.
     fn appendNormalizedWhitespace(self: *Compiler, s: []const u8) !void {
         var in_whitespace = true; // Start true to skip leading whitespace
         for (s) |c| {
@@ -713,7 +714,8 @@ const Compiler = struct {
             } else {
                 const escaped: []const u8 = switch (c) {
                     '\\' => "\\\\",
-                    '"' => "\\\"",
+                    // Escape double quotes as HTML entity for valid attribute values
+                    '"' => "&quot;",
                     else => &[_]u8{c},
                 };
                 try self.buf.appendSlice(self.allocator, escaped);
@@ -776,16 +778,25 @@ const Compiler = struct {
             try self.appendStatic("\"");
         }
 
-        if (e.classes.len > 0) {
-            try self.appendStatic(" class=\"");
-            for (e.classes, 0..) |cls, i| {
-                if (i > 0) try self.appendStatic(" ");
-                try self.appendStatic(cls);
+        // Check if there's a class attribute that needs to be merged with shorthand classes
+        var class_attr_value: ?[]const u8 = null;
+        var class_attr_escaped: bool = true;
+        for (e.attributes) |attr| {
+            if (std.mem.eql(u8, attr.name, "class")) {
+                class_attr_value = attr.value;
+                class_attr_escaped = attr.escaped;
+                break;
             }
-            try self.appendStatic("\"");
         }
 
+        // Emit merged class attribute (shorthand classes + class attribute value)
+        if (e.classes.len > 0 or class_attr_value != null) {
+            try self.emitMergedClassAttribute(e.classes, class_attr_value, class_attr_escaped);
+        }
+
+        // Emit other attributes (skip class since we handled it above)
         for (e.attributes) |attr| {
+            if (std.mem.eql(u8, attr.name, "class")) continue; // Already handled
             if (attr.value) |v| {
                 try self.emitAttribute(attr.name, v, attr.escaped);
             } else {
@@ -820,6 +831,96 @@ const Compiler = struct {
         try self.appendStatic("</");
         try self.appendStatic(e.tag);
         try self.appendStatic(">");
+    }
+
+    /// Emits a merged class attribute combining shorthand classes and class attribute value
+    fn emitMergedClassAttribute(self: *Compiler, shorthand_classes: []const []const u8, attr_value: ?[]const u8, escaped: bool) !void {
+        _ = escaped;
+
+        if (attr_value) |value| {
+            // Check for string concatenation first: "literal" + variable
+            if (findConcatOperator(value)) |concat_pos| {
+                // Has concatenation - need runtime handling
+                try self.flush();
+                try self.writeIndent();
+                try self.writer.writeAll("try o.appendSlice(a, \" class=\\\"\");\n");
+
+                // Add shorthand classes first
+                if (shorthand_classes.len > 0) {
+                    try self.writeIndent();
+                    try self.writer.writeAll("try o.appendSlice(a, \"");
+                    for (shorthand_classes, 0..) |cls, i| {
+                        if (i > 0) try self.writer.writeAll(" ");
+                        try self.writer.writeAll(cls);
+                    }
+                    try self.writer.writeAll(" \");\n"); // trailing space before concat value
+                }
+
+                // Emit the concatenation expression
+                try self.emitConcatExpr(value, concat_pos);
+
+                try self.writeIndent();
+                try self.writer.writeAll("try o.appendSlice(a, \"\\\"\");\n");
+                return;
+            }
+
+            // Check if attribute value is static (string literal) or dynamic
+            const is_static = value.len >= 2 and (value[0] == '"' or value[0] == '\'' or value[0] == '`');
+            const is_array = value.len >= 2 and value[0] == '[' and value[value.len - 1] == ']';
+
+            if (is_static or is_array) {
+                // Static value - can merge at compile time
+                try self.appendStatic(" class=\"");
+                // First add shorthand classes
+                for (shorthand_classes, 0..) |cls, i| {
+                    if (i > 0) try self.appendStatic(" ");
+                    try self.appendStatic(cls);
+                }
+                // Then add attribute value
+                if (shorthand_classes.len > 0) try self.appendStatic(" ");
+                if (is_array) {
+                    try self.appendStatic(parseArrayToSpaceSeparated(value));
+                } else if (value[0] == '`') {
+                    try self.appendNormalizedWhitespace(value[1 .. value.len - 1]);
+                } else {
+                    try self.appendStatic(value[1 .. value.len - 1]);
+                }
+                try self.appendStatic("\"");
+            } else {
+                // Dynamic value - need runtime concatenation
+                try self.flush();
+                try self.writeIndent();
+                try self.writer.writeAll("try o.appendSlice(a, \" class=\\\"\");\n");
+
+                // Add shorthand classes first
+                if (shorthand_classes.len > 0) {
+                    try self.writeIndent();
+                    try self.writer.writeAll("try o.appendSlice(a, \"");
+                    for (shorthand_classes, 0..) |cls, i| {
+                        if (i > 0) try self.writer.writeAll(" ");
+                        try self.writer.writeAll(cls);
+                    }
+                    try self.writer.writeAll(" \");\n"); // trailing space before dynamic value
+                }
+
+                // Add dynamic value
+                var accessor_buf: [512]u8 = undefined;
+                const accessor = self.buildAccessor(value, &accessor_buf);
+                try self.writeIndent();
+                try self.writer.print("try o.appendSlice(a, strVal({s}));\n", .{accessor});
+
+                try self.writeIndent();
+                try self.writer.writeAll("try o.appendSlice(a, \"\\\"\");\n");
+            }
+        } else {
+            // No attribute value, just shorthand classes
+            try self.appendStatic(" class=\"");
+            for (shorthand_classes, 0..) |cls, i| {
+                if (i > 0) try self.appendStatic(" ");
+                try self.appendStatic(cls);
+            }
+            try self.appendStatic("\"");
+        }
     }
 
     fn emitText(self: *Compiler, segs: []const ast.TextSegment) anyerror!void {
