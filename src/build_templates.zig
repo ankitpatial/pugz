@@ -1254,7 +1254,18 @@ const Compiler = struct {
         // Regular field access - use buildAccessor for consistency
         var accessor_buf: [512]u8 = undefined;
         const accessor = self.buildAccessor(cond, &accessor_buf);
-        try self.writer.print("truthy({s})", .{accessor});
+
+        // Check if this is a simple top-level field access (no dots, not a loop var or mixin param)
+        const is_simple_field = std.mem.indexOfScalar(u8, cond, '.') == null and
+            !self.isLoopVar(cond) and !self.isMixinParam(cond);
+
+        if (is_simple_field) {
+            // Use @hasField to make the field optional at compile time
+            self.uses_data = true;
+            try self.writer.print("@hasField(@TypeOf(d), \"{s}\") and truthy({s})", .{ cond, accessor });
+        } else {
+            try self.writer.print("truthy({s})", .{accessor});
+        }
     }
 
     fn emitEach(self: *Compiler, e: ast.Each) anyerror!void {

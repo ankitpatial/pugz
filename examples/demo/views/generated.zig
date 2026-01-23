@@ -143,7 +143,7 @@ pub fn home(a: Allocator, d: anytype) Allocator.Error![]u8 {
     try o.appendSlice(a, "</title><link rel=\"stylesheet\" href=\"/style.css\" /></head><body><header><h1>");
     try esc(&o, a, strVal(@field(d, "title")));
     try o.appendSlice(a, "</h1>");
-    if (truthy(@field(d, "authenticated"))) {
+    if (@hasField(@TypeOf(d), "authenticated") and truthy(@field(d, "authenticated"))) {
         try o.appendSlice(a, "<span class=\"user\">Welcome back!</span>");
     }
     try o.appendSlice(a, "</header><main><p>This page is rendered using a compiled template.</p><p>Compiled templates are 3x faster than Pug.js!</p></main><footer><p>&copy; 2024 Pugz Demo</p></footer></body></html>");
@@ -209,7 +209,7 @@ pub fn page_a(a: Allocator, d: anytype) Allocator.Error![]u8 {
         try o.appendSlice(a, " /></fieldset>");
     }
     try o.appendSlice(a, "<submit>sumit</submit>");
-    if (truthy(@field(d, "error"))) {
+    if (@hasField(@TypeOf(d), "error") and truthy(@field(d, "error"))) {
         {
             const message = @field(d, "error");
             const mixin_attrs_1: struct {
