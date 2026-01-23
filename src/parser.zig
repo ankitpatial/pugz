@@ -6,16 +6,31 @@
 //! - Element construction (tag, classes, id, attributes)
 //! - Control flow (if/else, each, while)
 //! - Mixins, includes, and template inheritance
+//!
+//! ## Error Diagnostics
+//! When parsing fails, call `getDiagnostic()` to get rich error info:
+//! ```zig
+//! var parser = Parser.init(allocator, tokens);
+//! const doc = parser.parse() catch |err| {
+//!     if (parser.getDiagnostic()) |diag| {
+//!         std.debug.print("{}\n", .{diag});
+//!     }
+//!     return err;
+//! };
+//! ```
 
 const std = @import("std");
 const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
+const diagnostic = @import("diagnostic.zig");
 
 const Token = lexer.Token;
 const TokenType = lexer.TokenType;
 const Node = ast.Node;
 const Attribute = ast.Attribute;
 const TextSegment = ast.TextSegment;
+
+pub const Diagnostic = diagnostic.Diagnostic;
 
 /// Errors that can occur during parsing.
 pub const ParserError = error{
@@ -42,6 +57,10 @@ pub const Parser = struct {
     tokens: []const Token,
     pos: usize,
     allocator: std.mem.Allocator,
+    /// Original source text (for error snippets)
+    source: ?[]const u8,
+    /// Last error diagnostic (populated on error)
+    last_diagnostic: ?Diagnostic,
 
     /// Creates a new parser for the given tokens.
     pub fn init(allocator: std.mem.Allocator, tokens: []const Token) Parser {
@@ -49,6 +68,53 @@ pub const Parser = struct {
             .tokens = tokens,
             .pos = 0,
             .allocator = allocator,
+            .source = null,
+            .last_diagnostic = null,
+        };
+    }
+
+    /// Creates a parser with source text for better error messages.
+    pub fn initWithSource(allocator: std.mem.Allocator, tokens: []const Token, source: []const u8) Parser {
+        return .{
+            .tokens = tokens,
+            .pos = 0,
+            .allocator = allocator,
+            .source = source,
+            .last_diagnostic = null,
+        };
+    }
+
+    /// Returns the last error diagnostic, if any.
+    /// Call this after parse() returns an error to get detailed error info.
+    pub fn getDiagnostic(self: *const Parser) ?Diagnostic {
+        return self.last_diagnostic;
+    }
+
+    /// Sets a diagnostic error with context from the current token.
+    fn setDiagnostic(self: *Parser, message: []const u8, suggestion: ?[]const u8) void {
+        const token = if (self.pos < self.tokens.len) self.tokens[self.pos] else self.tokens[self.tokens.len - 1];
+        const source_line = if (self.source) |src|
+            diagnostic.extractSourceLine(src, 0) // Would need position mapping
+        else
+            null;
+
+        self.last_diagnostic = .{
+            .line = @intCast(token.line),
+            .column = @intCast(token.column),
+            .message = message,
+            .source_line = source_line,
+            .suggestion = suggestion,
+        };
+    }
+
+    /// Sets a diagnostic error for a specific token.
+    fn setDiagnosticAtToken(self: *Parser, token: Token, message: []const u8, suggestion: ?[]const u8) void {
+        self.last_diagnostic = .{
+            .line = @intCast(token.line),
+            .column = @intCast(token.column),
+            .message = message,
+            .source_line = null,
+            .suggestion = suggestion,
         };
     }
 
@@ -562,6 +628,10 @@ pub const Parser = struct {
                     value_name = before_in;
                 }
             } else {
+                self.setDiagnostic(
+                    "Missing collection in 'each' loop - expected 'in' keyword",
+                    "Use syntax: each item in collection",
+                );
                 return ParserError.MissingCollection;
             }
         } else if (self.check(.tag)) {
@@ -584,6 +654,10 @@ pub const Parser = struct {
             // Parse collection expression
             collection = try self.parseRestOfLine();
         } else {
+            self.setDiagnostic(
+                "Missing iterator variable in 'each' loop",
+                "Use syntax: each item in collection",
+            );
             return ParserError.MissingIterator;
         }
 
@@ -774,6 +848,10 @@ pub const Parser = struct {
         if (self.check(.tag)) {
             name = self.advance().value;
         } else {
+            self.setDiagnostic(
+                "Missing mixin name after 'mixin' keyword",
+                "Use syntax: mixin name(params)",
+            );
             return ParserError.MissingMixinName;
         }
 
@@ -973,6 +1051,10 @@ pub const Parser = struct {
             // No name - this is a mixin block placeholder
             return .{ .mixin_block = {} };
         } else {
+            self.setDiagnostic(
+                "Missing block name after 'block' keyword",
+                "Use syntax: block name",
+            );
             return ParserError.MissingBlockName;
         }
 
@@ -1005,6 +1087,10 @@ pub const Parser = struct {
         } else if (self.check(.text)) {
             name = std.mem.trim(u8, self.advance().value, " \t");
         } else {
+            self.setDiagnostic(
+                "Missing block name after 'append' or 'prepend'",
+                "Use syntax: append blockname or prepend blockname",
+            );
             return ParserError.MissingBlockName;
         }
 

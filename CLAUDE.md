@@ -213,10 +213,10 @@ button(disabled=true)       // disabled="disabled"
 
 ### Text & Interpolation
 ```pug
-p Hello #{name}             // escaped interpolation
-p Hello !{rawHtml}          // unescaped interpolation
-p= variable                 // buffered code (escaped)
-p!= rawVariable             // buffered code (unescaped)
+p Hello #{name}             // escaped interpolation (SAFE - default)
+p Hello !{rawHtml}          // unescaped interpolation (UNSAFE - trusted content only)
+p= variable                 // buffered code (escaped, SAFE)
+p!= rawVariable             // buffered code (unescaped, UNSAFE)
 | Piped text line
 p.
   Multi-line
@@ -226,6 +226,8 @@ p.
 // Interpolation-only text works too
 h1.header #{title}          // renders <h1 class="header">Title Value</h1>
 ```
+
+**Security Note**: By default, `#{}` and `=` escape HTML entities (`<`, `>`, `&`, `"`, `'`) to prevent XSS attacks. Only use `!{}` or `!=` for content you fully trust (e.g., pre-sanitized HTML from your own code). Never use unescaped output for user-provided data.
 
 ### Tag Interpolation
 ```pug

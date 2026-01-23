@@ -34,6 +34,7 @@ pub const parser = @import("parser.zig");
 pub const codegen = @import("codegen.zig");
 pub const runtime = @import("runtime.zig");
 pub const view_engine = @import("view_engine.zig");
+pub const diagnostic = @import("diagnostic.zig");
 
 // Re-export main types for convenience
 pub const Lexer = lexer.Lexer;

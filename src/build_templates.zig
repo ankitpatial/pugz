@@ -36,7 +36,9 @@
 //! ```
 
 const std = @import("std");
-const Lexer = @import("lexer.zig").Lexer;
+const lexer_mod = @import("lexer.zig");
+const Lexer = lexer_mod.Lexer;
+const Diagnostic = lexer_mod.Diagnostic;
 const Parser = @import("parser.zig").Parser;
 const ast = @import("ast.zig");
 
@@ -316,6 +318,17 @@ fn generateSingleFile(
     try file.writeAll(out.items);
 }
 
+/// Logs a diagnostic error with file location in compiler-style format.
+fn logDiagnostic(file_path: []const u8, diag: Diagnostic) void {
+    std.log.err("{s}:{d}:{d}: {s}", .{ file_path, diag.line, diag.column, diag.message });
+    if (diag.source_line) |src_line| {
+        std.log.err("  | {s}", .{src_line});
+    }
+    if (diag.suggestion) |hint| {
+        std.log.err("  = hint: {s}", .{hint});
+    }
+}
+
 /// Compiles a single .pug template into a Zig function.
 /// Handles three cases:
 /// - Empty templates: return ""
@@ -332,13 +345,21 @@ fn compileTemplate(
     var lexer = Lexer.init(allocator, source);
     defer lexer.deinit();
     const tokens = lexer.tokenize() catch |err| {
-        std.log.err("Tokenize error in '{s}': {}", .{ name, err });
+        if (lexer.getDiagnostic()) |diag| {
+            logDiagnostic(name, diag);
+        } else {
+            std.log.err("Tokenize error in '{s}': {}", .{ name, err });
+        }
         return err;
     };
 
-    var parser = Parser.init(allocator, tokens);
+    var parser = Parser.initWithSource(allocator, tokens, source);
     const doc = parser.parse() catch |err| {
-        std.log.err("Parse error in '{s}': {}", .{ name, err });
+        if (parser.getDiagnostic()) |diag| {
+            logDiagnostic(name, diag);
+        } else {
+            std.log.err("Parse error in '{s}': {}", .{ name, err });
+        }
         return err;
     };
 
@@ -487,6 +508,86 @@ fn nodeHasDynamic(node: ast.Node) bool {
     };
 }
 
+/// Checks if a mixin body references `attributes` (for &attributes pass-through).
+/// Used to avoid emitting unused mixin_attrs struct in generated code.
+fn mixinUsesAttributes(nodes: []const ast.Node) bool {
+    for (nodes) |node| {
+        switch (node) {
+            .element => |e| {
+                // Check spread_attributes field
+                if (e.spread_attributes != null) return true;
+
+                // Check attribute values for 'attributes' reference
+                for (e.attributes) |attr| {
+                    if (attr.value) |val| {
+                        if (exprReferencesAttributes(val)) return true;
+                    }
+                }
+
+                // Check inline text for interpolated attributes reference
+                if (e.inline_text) |segs| {
+                    if (textSegmentsReferenceAttributes(segs)) return true;
+                }
+
+                // Check buffered code
+                if (e.buffered_code) |bc| {
+                    if (exprReferencesAttributes(bc.expression)) return true;
+                }
+
+                // Recurse into children
+                if (mixinUsesAttributes(e.children)) return true;
+            },
+            .text => |t| {
+                if (textSegmentsReferenceAttributes(t.segments)) return true;
+            },
+            .conditional => |c| {
+                for (c.branches) |br| {
+                    if (mixinUsesAttributes(br.children)) return true;
+                }
+            },
+            .each => |e| {
+                if (mixinUsesAttributes(e.children)) return true;
+                if (mixinUsesAttributes(e.else_children)) return true;
+            },
+            .case => |c| {
+                for (c.whens) |when| {
+                    if (mixinUsesAttributes(when.children)) return true;
+                }
+                if (mixinUsesAttributes(c.default_children)) return true;
+            },
+            .block => |b| {
+                if (mixinUsesAttributes(b.children)) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// Checks if an expression string references 'attributes' (e.g., "attributes.class").
+fn exprReferencesAttributes(expr: []const u8) bool {
+    // Check for 'attributes' as standalone or prefix (attributes.class, attributes.id, etc.)
+    if (std.mem.startsWith(u8, expr, "attributes")) {
+        // Must be exactly "attributes" or "attributes." followed by more
+        if (expr.len == 10) return true; // exactly "attributes"
+        if (expr.len > 10 and expr[10] == '.') return true; // "attributes.something"
+    }
+    return false;
+}
+
+/// Checks if text segments contain interpolations referencing 'attributes'.
+fn textSegmentsReferenceAttributes(segs: []const ast.TextSegment) bool {
+    for (segs) |seg| {
+        switch (seg) {
+            .interp_escaped, .interp_unescaped => |expr| {
+                if (exprReferencesAttributes(expr)) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
 /// Zig reserved keywords - field names matching these must be escaped with @"..."
 /// when used in generated code (e.g., @"type" instead of type)
 const zig_keywords = std.StaticStringMap(void).initComptime(.{
@@ -575,7 +676,6 @@ const Compiler = struct {
     uses_data: bool, // True if template accesses the data parameter 'd'
     mixin_depth: usize, // Nesting level for generating unique mixin variable names
     current_attrs_var: ?[]const u8, // Variable name for current mixin's &attributes
-    used_attrs_var: bool, // True if current mixin accessed its attributes
 
     fn init(
         allocator: std.mem.Allocator,
@@ -597,7 +697,6 @@ const Compiler = struct {
             .uses_data = false,
             .mixin_depth = 0,
             .current_attrs_var = null,
-            .used_attrs_var = false,
         };
     }
 
@@ -689,13 +788,21 @@ const Compiler = struct {
 
         var lexer = Lexer.init(self.allocator, source);
         const tokens = lexer.tokenize() catch |err| {
-            std.log.err("Tokenize error in included template '{s}': {}", .{ path, err });
+            if (lexer.getDiagnostic()) |diag| {
+                logDiagnostic(path, diag);
+            } else {
+                std.log.err("Tokenize error in included template '{s}': {}", .{ path, err });
+            }
             return err;
         };
 
-        var parser = Parser.init(self.allocator, tokens);
+        var parser = Parser.initWithSource(self.allocator, tokens, source);
         return parser.parse() catch |err| {
-            std.log.err("Parse error in included template '{s}': {}", .{ path, err });
+            if (parser.getDiagnostic()) |diag| {
+                logDiagnostic(path, diag);
+            } else {
+                std.log.err("Parse error in included template '{s}': {}", .{ path, err });
+            }
             return err;
         };
     }
@@ -1195,7 +1302,6 @@ const Compiler = struct {
             // Special case: attributes.X should use current mixin's attributes variable
             if (std.mem.eql(u8, base, "attributes")) {
                 if (self.current_attrs_var) |attrs_var| {
-                    self.used_attrs_var = true;
                     return std.fmt.bufPrint(buf, "{s}.{s}", .{ attrs_var, rest }) catch expr;
                 }
             }
@@ -1215,7 +1321,6 @@ const Compiler = struct {
             // Special case: 'attributes' alone should use current mixin's attributes variable
             if (std.mem.eql(u8, expr, "attributes")) {
                 if (self.current_attrs_var) |attrs_var| {
-                    self.used_attrs_var = true;
                     return attrs_var;
                 }
             }
@@ -1573,71 +1678,67 @@ const Compiler = struct {
             try self.writer.writeAll("};\n");
         }
 
-        // Handle mixin call attributes: +mixin(args)(class="foo", data-id="bar")
-        // Create an 'attributes' struct with optional fields that the mixin body can access
-        // Use unique name based on mixin depth to avoid shadowing in nested mixin calls
-        self.mixin_depth += 1;
-        const current_depth = self.mixin_depth;
+        // Check if mixin body actually uses &attributes before emitting the struct
+        const uses_attributes = mixinUsesAttributes(mixin_def.children);
 
         // Save previous attrs var and restore after mixin body
         const prev_attrs_var = self.current_attrs_var;
-        const prev_used_attrs = self.used_attrs_var;
-        self.used_attrs_var = false;
+        defer self.current_attrs_var = prev_attrs_var;
 
-        // Generate unique attribute variable name for this mixin depth
-        var attr_var_buf: [32]u8 = undefined;
-        const attr_var_name = std.fmt.bufPrint(&attr_var_buf, "mixin_attrs_{d}", .{current_depth}) catch "mixin_attrs";
+        // Only emit attributes struct if the mixin actually uses it
+        if (uses_attributes) {
+            // Use unique name based on mixin depth to avoid shadowing in nested mixin calls
+            self.mixin_depth += 1;
+            const current_depth = self.mixin_depth;
 
-        // Set current attrs var for buildAccessor to use
-        self.current_attrs_var = attr_var_name;
+            var attr_var_buf: [32]u8 = undefined;
+            const attr_var_name = std.fmt.bufPrint(&attr_var_buf, "mixin_attrs_{d}", .{current_depth}) catch "mixin_attrs";
 
-        try self.mixin_params.append(self.allocator, attr_var_name);
-        try self.writeIndent();
-        try self.writer.print("const {s}: struct {{\n", .{attr_var_name});
-        self.depth += 1;
-        // Define fields as optional with defaults
-        try self.writeIndent();
-        try self.writer.writeAll("class: []const u8 = \"\",\n");
-        try self.writeIndent();
-        try self.writer.writeAll("id: []const u8 = \"\",\n");
-        try self.writeIndent();
-        try self.writer.writeAll("style: []const u8 = \"\",\n");
-        self.depth -= 1;
-        try self.writeIndent();
-        try self.writer.writeAll("} = .{\n");
-        self.depth += 1;
-        for (call.attributes) |attr| {
-            // Only emit known attributes (class, id, style for now)
-            if (std.mem.eql(u8, attr.name, "class") or
-                std.mem.eql(u8, attr.name, "id") or
-                std.mem.eql(u8, attr.name, "style"))
-            {
-                try self.writeIndent();
-                try self.writer.print(".{s} = ", .{attr.name});
-                if (attr.value) |val| {
-                    // Check if it's a string literal
-                    if (val.len >= 2 and (val[0] == '"' or val[0] == '\'')) {
-                        try self.writer.print("{s},\n", .{val});
+            self.current_attrs_var = attr_var_name;
+            try self.mixin_params.append(self.allocator, attr_var_name);
+
+            try self.writeIndent();
+            try self.writer.print("const {s}: struct {{\n", .{attr_var_name});
+            self.depth += 1;
+            try self.writeIndent();
+            try self.writer.writeAll("class: []const u8 = \"\",\n");
+            try self.writeIndent();
+            try self.writer.writeAll("id: []const u8 = \"\",\n");
+            try self.writeIndent();
+            try self.writer.writeAll("style: []const u8 = \"\",\n");
+            self.depth -= 1;
+            try self.writeIndent();
+            try self.writer.writeAll("} = .{\n");
+            self.depth += 1;
+
+            for (call.attributes) |attr| {
+                if (std.mem.eql(u8, attr.name, "class") or
+                    std.mem.eql(u8, attr.name, "id") or
+                    std.mem.eql(u8, attr.name, "style"))
+                {
+                    try self.writeIndent();
+                    try self.writer.print(".{s} = ", .{attr.name});
+                    if (attr.value) |val| {
+                        if (val.len >= 2 and (val[0] == '"' or val[0] == '\'')) {
+                            try self.writer.print("{s},\n", .{val});
+                        } else {
+                            var accessor_buf: [512]u8 = undefined;
+                            const accessor = self.buildAccessor(val, &accessor_buf);
+                            try self.writer.print("{s},\n", .{accessor});
+                        }
                     } else {
-                        // It's a variable reference
-                        var accessor_buf: [512]u8 = undefined;
-                        const accessor = self.buildAccessor(val, &accessor_buf);
-                        try self.writer.print("{s},\n", .{accessor});
+                        try self.writer.writeAll("\"\",\n");
                     }
-                } else {
-                    try self.writer.writeAll("\"\",\n");
                 }
             }
+
+            self.depth -= 1;
+            try self.writeIndent();
+            try self.writer.writeAll("};\n");
         }
-        self.depth -= 1;
-        try self.writeIndent();
-        try self.writer.writeAll("};\n");
 
         // Emit mixin body
-        // Note: block content (call.block_children) is handled by mixin_block nodes
-        // For now, we'll inline the mixin body directly
         for (mixin_def.children) |child| {
-            // Handle mixin_block specially - replace with call's block_children
             if (child == .mixin_block) {
                 for (call.block_children) |block_child| {
                     try self.emitNode(block_child);
@@ -1647,22 +1748,15 @@ const Compiler = struct {
             }
         }
 
-        // Suppress unused variable warning if attributes wasn't used
-        if (!self.used_attrs_var) {
-            try self.writeIndent();
-            try self.writer.print("_ = {s};\n", .{attr_var_name});
-        }
-
         // Close scope block
         try self.flush();
         self.depth -= 1;
         try self.writeIndent();
         try self.writer.writeAll("}\n");
 
-        // Restore previous state
-        self.current_attrs_var = prev_attrs_var;
-        self.used_attrs_var = prev_used_attrs;
-        self.mixin_depth -= 1;
+        if (uses_attributes) {
+            self.mixin_depth -= 1;
+        }
     }
 
     /// Attempts to load a mixin from the mixins/ subdirectory.

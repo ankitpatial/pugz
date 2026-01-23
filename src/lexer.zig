@@ -3,8 +3,23 @@
 //! The lexer handles indentation-based nesting (emitting indent/dedent tokens),
 //! Pug-specific syntax (tags, classes, IDs, attributes), and text content
 //! including interpolation markers.
+//!
+//! ## Error Diagnostics
+//! When tokenization fails, call `getDiagnostic()` to get rich error info:
+//! ```zig
+//! var lexer = Lexer.init(allocator, source);
+//! const tokens = lexer.tokenize() catch |err| {
+//!     if (lexer.getDiagnostic()) |diag| {
+//!         std.debug.print("{}\n", .{diag});
+//!     }
+//!     return err;
+//! };
+//! ```
 
 const std = @import("std");
+const diagnostic = @import("diagnostic.zig");
+
+pub const Diagnostic = diagnostic.Diagnostic;
 
 /// All possible token types produced by the lexer.
 pub const TokenType = enum {
@@ -136,6 +151,8 @@ pub const Lexer = struct {
     in_raw_block: bool,
     raw_block_indent: usize,
     raw_block_started: bool,
+    /// Last error diagnostic (populated on error)
+    last_diagnostic: ?Diagnostic,
 
     /// Creates a new lexer for the given source.
     /// Does not allocate; allocations happen during tokenize().
@@ -153,7 +170,25 @@ pub const Lexer = struct {
             .in_raw_block = false,
             .raw_block_indent = 0,
             .raw_block_started = false,
+            .last_diagnostic = null,
         };
+    }
+
+    /// Returns the last error diagnostic, if any.
+    /// Call this after tokenize() returns an error to get detailed error info.
+    pub fn getDiagnostic(self: *const Lexer) ?Diagnostic {
+        return self.last_diagnostic;
+    }
+
+    /// Sets a diagnostic error with full context.
+    fn setDiagnostic(self: *Lexer, message: []const u8, suggestion: ?[]const u8) void {
+        self.last_diagnostic = Diagnostic.withContext(
+            @intCast(self.line),
+            @intCast(self.column),
+            message,
+            diagnostic.extractSourceLine(self.source, self.pos) orelse "",
+            suggestion,
+        );
     }
 
     /// Releases all allocated memory (tokens and indent stack).
@@ -201,6 +236,7 @@ pub const Lexer = struct {
         self.column = 1;
         self.at_line_start = true;
         self.current_indent = 0;
+        self.last_diagnostic = null;
     }
 
     /// Appends a token to the output list.
@@ -858,7 +894,10 @@ pub const Lexer = struct {
                 brace_depth += 1;
             } else if (c == '}') {
                 if (brace_depth == 0) {
-                    // Unmatched closing brace - shouldn't happen if called correctly
+                    self.setDiagnostic(
+                        "Unmatched closing brace '}'",
+                        "Remove the extra '}' or add a matching '{'",
+                    );
                     return LexerError.UnmatchedBrace;
                 }
                 brace_depth -= 1;
@@ -872,6 +911,10 @@ pub const Lexer = struct {
 
         // Check for unterminated object literal
         if (brace_depth > 0) {
+            self.setDiagnostic(
+                "Unterminated object literal - missing closing '}'",
+                "Add a closing '}' to complete the object",
+            );
             return LexerError.UnterminatedString;
         }
 
@@ -889,6 +932,10 @@ pub const Lexer = struct {
                 bracket_depth += 1;
             } else if (c == ']') {
                 if (bracket_depth == 0) {
+                    self.setDiagnostic(
+                        "Unmatched closing bracket ']'",
+                        "Remove the extra ']' or add a matching '['",
+                    );
                     return LexerError.UnmatchedBrace;
                 }
                 bracket_depth -= 1;
@@ -901,6 +948,10 @@ pub const Lexer = struct {
         }
 
         if (bracket_depth > 0) {
+            self.setDiagnostic(
+                "Unterminated array literal - missing closing ']'",
+                "Add a closing ']' to complete the array",
+            );
             return LexerError.UnterminatedString;
         }
 
