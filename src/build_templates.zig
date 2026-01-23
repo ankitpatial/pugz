@@ -536,6 +536,9 @@ const Compiler = struct {
     mixins: std.StringHashMap(ast.MixinDef), // Collected mixin definitions
     blocks: std.StringHashMap(BlockDef), // Collected block definitions for inheritance
     uses_data: bool, // Track whether the data parameter 'd' is actually used
+    mixin_depth: usize, // Track nesting depth for unique variable names
+    current_attrs_var: ?[]const u8, // Current mixin's attributes variable name
+    used_attrs_var: bool, // Track if current mixin's attributes were accessed
 
     fn init(
         allocator: std.mem.Allocator,
@@ -555,6 +558,9 @@ const Compiler = struct {
             .mixins = std.StringHashMap(ast.MixinDef).init(allocator),
             .blocks = std.StringHashMap(BlockDef).init(allocator),
             .uses_data = false,
+            .mixin_depth = 0,
+            .current_attrs_var = null,
+            .used_attrs_var = false,
         };
     }
 
@@ -1145,10 +1151,19 @@ const Compiler = struct {
     }
 
     fn buildAccessor(self: *Compiler, expr: []const u8, buf: []u8) []const u8 {
-        // Handle nested field access like friend.name, subFriend.id
+        // Handle nested field access like friend.name, subFriend.id, attributes.class
         if (std.mem.indexOfScalar(u8, expr, '.')) |dot| {
             const base = expr[0..dot];
             const rest = expr[dot + 1 ..];
+
+            // Special case: attributes.X should use current mixin's attributes variable
+            if (std.mem.eql(u8, base, "attributes")) {
+                if (self.current_attrs_var) |attrs_var| {
+                    self.used_attrs_var = true;
+                    return std.fmt.bufPrint(buf, "{s}.{s}", .{ attrs_var, rest }) catch expr;
+                }
+            }
+
             // For loop variables or mixin params like friend.name, access directly
             if (self.isLoopVar(base) or self.isMixinParam(base)) {
                 // Escape base if it's a keyword - use the output buffer
@@ -1161,6 +1176,14 @@ const Compiler = struct {
             self.uses_data = true;
             return std.fmt.bufPrint(buf, "@field(d, \"{s}\").{s}", .{ base, rest }) catch expr;
         } else {
+            // Special case: 'attributes' alone should use current mixin's attributes variable
+            if (std.mem.eql(u8, expr, "attributes")) {
+                if (self.current_attrs_var) |attrs_var| {
+                    self.used_attrs_var = true;
+                    return attrs_var;
+                }
+            }
+
             // Check if it's a loop variable or mixin param
             if (self.isLoopVar(expr) or self.isMixinParam(expr)) {
                 // Escape if it's a keyword - use the output buffer
@@ -1505,6 +1528,66 @@ const Compiler = struct {
             try self.writer.writeAll("};\n");
         }
 
+        // Handle mixin call attributes: +mixin(args)(class="foo", data-id="bar")
+        // Create an 'attributes' struct with optional fields that the mixin body can access
+        // Use unique name based on mixin depth to avoid shadowing in nested mixin calls
+        self.mixin_depth += 1;
+        const current_depth = self.mixin_depth;
+
+        // Save previous attrs var and restore after mixin body
+        const prev_attrs_var = self.current_attrs_var;
+        const prev_used_attrs = self.used_attrs_var;
+        self.used_attrs_var = false;
+
+        // Generate unique attribute variable name for this mixin depth
+        var attr_var_buf: [32]u8 = undefined;
+        const attr_var_name = std.fmt.bufPrint(&attr_var_buf, "mixin_attrs_{d}", .{current_depth}) catch "mixin_attrs";
+
+        // Set current attrs var for buildAccessor to use
+        self.current_attrs_var = attr_var_name;
+
+        try self.mixin_params.append(self.allocator, attr_var_name);
+        try self.writeIndent();
+        try self.writer.print("const {s}: struct {{\n", .{attr_var_name});
+        self.depth += 1;
+        // Define fields as optional with defaults
+        try self.writeIndent();
+        try self.writer.writeAll("class: []const u8 = \"\",\n");
+        try self.writeIndent();
+        try self.writer.writeAll("id: []const u8 = \"\",\n");
+        try self.writeIndent();
+        try self.writer.writeAll("style: []const u8 = \"\",\n");
+        self.depth -= 1;
+        try self.writeIndent();
+        try self.writer.writeAll("} = .{\n");
+        self.depth += 1;
+        for (call.attributes) |attr| {
+            // Only emit known attributes (class, id, style for now)
+            if (std.mem.eql(u8, attr.name, "class") or
+                std.mem.eql(u8, attr.name, "id") or
+                std.mem.eql(u8, attr.name, "style"))
+            {
+                try self.writeIndent();
+                try self.writer.print(".{s} = ", .{attr.name});
+                if (attr.value) |val| {
+                    // Check if it's a string literal
+                    if (val.len >= 2 and (val[0] == '"' or val[0] == '\'')) {
+                        try self.writer.print("{s},\n", .{val});
+                    } else {
+                        // It's a variable reference
+                        var accessor_buf: [512]u8 = undefined;
+                        const accessor = self.buildAccessor(val, &accessor_buf);
+                        try self.writer.print("{s},\n", .{accessor});
+                    }
+                } else {
+                    try self.writer.writeAll("\"\",\n");
+                }
+            }
+        }
+        self.depth -= 1;
+        try self.writeIndent();
+        try self.writer.writeAll("};\n");
+
         // Emit mixin body
         // Note: block content (call.block_children) is handled by mixin_block nodes
         // For now, we'll inline the mixin body directly
@@ -1519,11 +1602,22 @@ const Compiler = struct {
             }
         }
 
+        // Suppress unused variable warning if attributes wasn't used
+        if (!self.used_attrs_var) {
+            try self.writeIndent();
+            try self.writer.print("_ = {s};\n", .{attr_var_name});
+        }
+
         // Close scope block
         try self.flush();
         self.depth -= 1;
         try self.writeIndent();
         try self.writer.writeAll("}\n");
+
+        // Restore previous state
+        self.current_attrs_var = prev_attrs_var;
+        self.used_attrs_var = prev_used_attrs;
+        self.mixin_depth -= 1;
     }
 
     /// Try to load a mixin from the mixins directory
