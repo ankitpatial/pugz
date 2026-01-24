@@ -214,6 +214,50 @@ pub fn page_a(a: Allocator, d: anytype) Allocator.Error![]u8 {
     return o.items;
 }
 
+pub fn mixin_test(a: Allocator, d: anytype) Allocator.Error![]u8 {
+    var o: ArrayList = .empty;
+    try o.appendSlice(a, "<!DOCTYPE html><html><head><title>Mixin Test</title></head><body><h1>Mixin Test Page</h1><p>Testing button mixin:</p>");
+    {
+        const text = "Click Me";
+        const @"type" = "primary";
+        try o.appendSlice(a, "<button");
+        try o.appendSlice(a, " class=\"");
+        try o.appendSlice(a, "btn btn-");
+        try o.appendSlice(a, strVal(@"type"));
+        try o.appendSlice(a, "\"");
+        try o.appendSlice(a, ">");
+        try esc(&o, a, strVal(text));
+        try o.appendSlice(a, "</button>");
+    }
+    {
+        const text = "Cancel";
+        const @"type" = "btn btn-secondary";
+        try o.appendSlice(a, "<button");
+        try o.appendSlice(a, " class=\"");
+        try o.appendSlice(a, "btn btn-");
+        try o.appendSlice(a, strVal(@"type"));
+        try o.appendSlice(a, "\"");
+        try o.appendSlice(a, ">");
+        try esc(&o, a, strVal(text));
+        try o.appendSlice(a, "</button>");
+    }
+    try o.appendSlice(a, "<p>Testing link mixin:</p>");
+    {
+        const href = "/home";
+        const text = "Go Home";
+        try o.appendSlice(a, "<a class=\"btn btn-link\"");
+        try o.appendSlice(a, " href=\"");
+        try o.appendSlice(a, strVal(href));
+        try o.appendSlice(a, "\"");
+        try o.appendSlice(a, ">");
+        try esc(&o, a, strVal(text));
+        try o.appendSlice(a, "</a>");
+    }
+    try o.appendSlice(a, "</body></html>");
+    _ = d;
+    return o.items;
+}
+
 pub fn page_b(a: Allocator, d: anytype) Allocator.Error![]u8 {
     var o: ArrayList = .empty;
     try o.appendSlice(a, "<html><head><title>My Site - ");
@@ -281,6 +325,7 @@ pub const template_names = [_][]const u8{
     "mixins_input_text",
     "home",
     "page_a",
+    "mixin_test",
     "page_b",
     "layout_2",
     "layout",

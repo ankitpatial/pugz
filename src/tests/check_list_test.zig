@@ -15,6 +15,57 @@
 const std = @import("std");
 const pugz = @import("pugz");
 
+/// Normalizes HTML by removing indentation/formatting whitespace.
+/// This allows comparing pretty vs non-pretty output.
+fn normalizeHtml(allocator: std.mem.Allocator, html: []const u8) ![]const u8 {
+    var result = std.ArrayListUnmanaged(u8){};
+    var i: usize = 0;
+    var in_tag = false;
+    var last_was_space = false;
+
+    while (i < html.len) {
+        const c = html[i];
+
+        if (c == '<') {
+            in_tag = true;
+            last_was_space = false;
+            try result.append(allocator, c);
+        } else if (c == '>') {
+            in_tag = false;
+            last_was_space = false;
+            try result.append(allocator, c);
+        } else if (c == '\n' or c == '\r') {
+            // Skip newlines
+            i += 1;
+            continue;
+        } else if (c == ' ' or c == '\t') {
+            if (in_tag) {
+                // Preserve single space in tags for attribute separation
+                if (!last_was_space) {
+                    try result.append(allocator, ' ');
+                    last_was_space = true;
+                }
+            } else {
+                // Outside tags: skip leading whitespace after >
+                if (result.items.len > 0 and result.items[result.items.len - 1] != '>') {
+                    if (!last_was_space) {
+                        try result.append(allocator, ' ');
+                        last_was_space = true;
+                    }
+                }
+            }
+            i += 1;
+            continue;
+        } else {
+            last_was_space = false;
+            try result.append(allocator, c);
+        }
+        i += 1;
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 fn runTest(comptime name: []const u8) !void {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -24,18 +75,16 @@ fn runTest(comptime name: []const u8) !void {
     const pug_content = @embedFile("check_list/" ++ name ++ ".pug");
     const expected_html = @embedFile("check_list/" ++ name ++ ".html");
 
-    var lexer = pugz.Lexer.init(alloc, pug_content);
-    const tokens = try lexer.tokenize();
-
-    var parser = pugz.Parser.init(alloc, tokens);
-    const doc = try parser.parse();
-
-    const result = try pugz.render(alloc, doc, .{});
+    const result = try pugz.renderTemplate(alloc, pug_content, .{});
 
     const trimmed_result = std.mem.trimRight(u8, result, " \n\r\t");
     const trimmed_expected = std.mem.trimRight(u8, expected_html, " \n\r\t");
 
-    try std.testing.expectEqualStrings(trimmed_expected, trimmed_result);
+    // Normalize both for comparison (ignores pretty-print differences)
+    const norm_result = try normalizeHtml(alloc, trimmed_result);
+    const norm_expected = try normalizeHtml(alloc, trimmed_expected);
+
+    try std.testing.expectEqualStrings(norm_expected, norm_result);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

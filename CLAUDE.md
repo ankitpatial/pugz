@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Purpose
 
-Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It implements Pug 3 syntax for indentation-based HTML templating with a focus on server-side rendering.
+Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It compiles Pug templates directly to HTML (unlike JS pug which compiles to JavaScript functions). It implements Pug 3 syntax for indentation-based HTML templating with a focus on server-side rendering.
 
 ## Rules
 - Do not auto commit, user will do it.
@@ -16,119 +16,142 @@ Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It implements Pug
 
 - `zig build` - Build the project (output in `zig-out/`)
 - `zig build test` - Run all tests
-- `zig build bench-compiled` - Run compiled templates benchmark (compare with Pug.js)
-- `zig build bench-interpreted` - Inpterpret trmplates
+- `zig build bench-v1` - Run v1 template benchmark
+- `zig build bench-interpreted` - Run interpreted templates benchmark
 
 ## Architecture Overview
 
-The template engine supports two rendering modes:
+### Compilation Pipeline
 
-### 1. Runtime Rendering (Interpreted)
 ```
-Source → Lexer → Tokens → Parser → AST → Runtime → HTML
-```
-
-### 2. Build-Time Compilation (Compiled)
-```
-Source → Lexer → Tokens → Parser → AST → build_templates.zig → generated.zig → Native Zig Code
+Source → Lexer → Tokens → StripComments → Parser → AST → Linker → Codegen → HTML
 ```
 
-The compiled mode is **~3x faster** than Pug.js.
+### Two Rendering Modes
+
+1. **Static compilation** (`pug.compile`): Outputs HTML directly
+2. **Data binding** (`template.renderWithData`): Supports `#{field}` interpolation with Zig structs
 
 ### Core Modules
 
-| Module | Purpose |
-|--------|---------|
-| **src/lexer.zig** | Tokenizes Pug source into tokens. Handles indentation tracking, raw text blocks, interpolation. |
-| **src/parser.zig** | Converts token stream into AST. Handles nesting via indent/dedent tokens. |
-| **src/ast.zig** | AST node definitions (Element, Text, Conditional, Each, Mixin, etc.) |
-| **src/runtime.zig** | Evaluates AST with data context, produces final HTML. Handles variable interpolation, conditionals, loops, mixins. |
-| **src/build_templates.zig** | Build-time template compiler. Generates optimized Zig code from `.pug` templates. |
-| **src/view_engine.zig** | High-level ViewEngine for web servers. Manages views directory, auto-loads mixins. |
-| **src/root.zig** | Public library API - exports `ViewEngine`, `renderTemplate()`, `build_templates` and core types. |
+| Module | File | Purpose |
+|--------|------|---------|
+| **Lexer** | `src/lexer.zig` | Tokenizes Pug source into tokens |
+| **Parser** | `src/parser.zig` | Builds AST from tokens |
+| **Runtime** | `src/runtime.zig` | Shared utilities (HTML escaping, etc.) |
+| **Error** | `src/error.zig` | Error formatting with source context |
+| **Walk** | `src/walk.zig` | AST traversal with visitor pattern |
+| **Strip Comments** | `src/strip_comments.zig` | Token filtering for comments |
+| **Load** | `src/load.zig` | File loading for includes/extends |
+| **Linker** | `src/linker.zig` | Template inheritance (extends/blocks) |
+| **Codegen** | `src/codegen.zig` | AST to HTML generation |
+| **Template** | `src/template.zig` | Data binding renderer |
+| **Pug** | `src/pug.zig` | Main entry point |
+| **ViewEngine** | `src/view_engine.zig` | High-level API for web servers |
+| **Root** | `src/root.zig` | Public library API exports |
 
 ### Test Files
 
-- **src/tests/general_test.zig** - Comprehensive integration tests for all features
+- **src/tests/general_test.zig** - Comprehensive integration tests
 - **src/tests/doctype_test.zig** - Doctype-specific tests
-- **src/tests/inheritance_test.zig** - Template inheritance tests
+- **src/tests/check_list_test.zig** - Template output validation tests
+- **src/lexer_test.zig** - Lexer unit tests
+- **src/parser_test.zig** - Parser unit tests
 
-## Build-Time Template Compilation
+## API Usage
 
-For maximum performance, templates can be compiled to native Zig code at build time.
-
-### Setup in build.zig
+### Static Compilation (no data)
 
 ```zig
 const std = @import("std");
+const pug = @import("pugz").pug;
 
-pub fn build(b: *std.Build) void {
-    const pugz_dep = b.dependency("pugz", .{});
-    
-    // Compile templates at build time
-    const build_templates = @import("pugz").build_templates;
-    const compiled_templates = build_templates.compileTemplates(b, .{
-        .source_dir = "views",  // Directory containing .pug files
-    });
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
 
-    const exe = b.addExecutable(.{
-        .name = "myapp",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .imports = &.{
-                .{ .name = "pugz", .module = pugz_dep.module("pugz") },
-                .{ .name = "tpls", .module = compiled_templates },
-            },
-        }),
-    });
+    var result = try pug.compile(allocator, "p Hello World", .{});
+    defer result.deinit(allocator);
+
+    std.debug.print("{s}\n", .{result.html}); // <p>Hello World</p>
 }
 ```
 
-### Usage in Code
+### Dynamic Rendering with Data
 
 ```zig
-const tpls = @import("tpls");
+const std = @import("std");
+const pugz = @import("pugz");
 
-pub fn handleRequest(allocator: std.mem.Allocator) ![]u8 {
-    // Zero-cost template rendering - just native Zig code
-    return try tpls.home(allocator, .{
+pub fn main() !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const html = try pugz.renderTemplate(arena.allocator(),
+        \\h1 #{title}
+        \\p #{message}
+    , .{
         .title = "Welcome",
-        .user = .{ .name = "Alice", .email = "alice@example.com" },
-        .items = &[_][]const u8{ "One", "Two", "Three" },
+        .message = "Hello, World!",
+    });
+
+    std.debug.print("{s}\n", .{html});
+    // Output: <h1>Welcome</h1><p>Hello, World!</p>
+}
+```
+
+### Data Binding Features
+
+- **Interpolation**: `#{fieldName}` in text content
+- **Attribute binding**: `a(href=url)` binds `url` field to href
+- **Buffered code**: `p= message` outputs the `message` field
+- **Auto-escaping**: HTML is escaped by default (XSS protection)
+
+```zig
+const html = try pugz.renderTemplate(allocator,
+    \\a(href=url, class=style) #{text}
+, .{
+    .url = "https://example.com",
+    .style = "btn",
+    .text = "Click me!",
+});
+// Output: <a href="https://example.com" class="btn">Click me!</a>
+```
+
+### ViewEngine (for Web Servers)
+
+```zig
+const std = @import("std");
+const pugz = @import("pugz");
+
+const engine = pugz.ViewEngine.init(.{
+    .views_dir = "src/views",
+    .extension = ".pug",
+});
+
+// In request handler
+pub fn handleRequest(allocator: std.mem.Allocator) ![]const u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    return try engine.render(arena.allocator(), "pages/home", .{
+        .title = "Home",
+        .user = .{ .name = "Alice" },
     });
 }
 ```
 
-### Generated Code Features
+### Compile Options
 
-The compiler generates optimized Zig code with:
-- **Static string merging** - Consecutive static content merged into single `appendSlice` calls
-- **Zero allocation for static templates** - Returns string literal directly
-- **Type-safe data access** - Uses `@field(d, "name")` for compile-time checked field access
-- **Automatic type conversion** - `strVal()` helper converts integers to strings
-- **Optional handling** - Nullable slices handled with `orelse &.{}`
-- **HTML escaping** - Lookup table for fast character escaping
-
-### Benchmark Results (2000 iterations)
-
-| Template | Pug.js | Pugz | Speedup |
-|----------|--------|------|---------|
-| simple-0 | 0.8ms | 0.1ms | **8x** |
-| simple-1 | 1.4ms | 0.6ms | **2.3x** |
-| simple-2 | 1.8ms | 0.6ms | **3x** |
-| if-expression | 0.6ms | 0.2ms | **3x** |
-| projects-escaped | 4.4ms | 0.6ms | **7.3x** |
-| search-results | 15.2ms | 5.6ms | **2.7x** |
-| friends | 153.5ms | 54.0ms | **2.8x** |
-| **TOTAL** | **177.6ms** | **61.6ms** | **~3x faster** |
-
-Run benchmarks:
-```bash
-# Pugz (Zig)
-zig build bench-compiled
-
-# Pug.js (for comparison)
-cd src/benchmarks/pugjs && npm install && npm run bench
+```zig
+pub const CompileOptions = struct {
+    filename: ?[]const u8 = null,        // For error messages
+    basedir: ?[]const u8 = null,         // For absolute includes
+    pretty: bool = false,                 // Pretty print output
+    strip_unbuffered_comments: bool = true,
+    strip_buffered_comments: bool = false,
+    debug: bool = false,
+    doctype: ?[]const u8 = null,
+};
 ```
 
 ## Memory Management
@@ -144,46 +167,30 @@ const html = try pugz.renderTemplate(arena.allocator(), template, data);
 
 This pattern is recommended because template rendering creates many small allocations that are all freed together after the response is sent.
 
-## Key Implementation Details
+## Key Implementation Notes
 
-### Lexer State Machine
+### Lexer (`lexer.zig`)
+- `Lexer.init(allocator, source, options)` - Initialize
+- `Lexer.getTokens()` - Returns token slice
+- `Lexer.last_error` - Check for errors after failed `getTokens()`
 
-The lexer tracks several states for handling complex syntax:
-- `in_raw_block` / `raw_block_indent` / `raw_block_started` - For dot block text (e.g., `script.`)
-- `indent_stack` - Stack-based indent/dedent token generation
+### Parser (`parser.zig`)
+- `Parser.init(allocator, tokens, filename, source)` - Initialize
+- `Parser.parse()` - Returns AST root node
+- `Parser.err` - Check for errors after failed `parse()`
 
-**Important**: The lexer distinguishes between `#id` (ID selector), `#{expr}` (interpolation), and `#[tag]` (tag interpolation) by looking ahead at the next character.
+### Codegen (`codegen.zig`)
+- `Compiler.init(allocator, options)` - Initialize
+- `Compiler.compile(ast)` - Returns HTML string
 
-### Token Types
+### Walk (`walk.zig`)
+- Uses O(1) stack operations (append/pop) not O(n) insert/remove
+- `getParent(index)` uses reverse indexing (0 = immediate parent)
+- `initWithCapacity()` for pre-allocation optimization
 
-Key tokens: `tag`, `class`, `id`, `lparen`, `rparen`, `attr_name`, `attr_value`, `text`, `interp_start`, `interp_end`, `indent`, `dedent`, `dot_block`, `pipe_text`, `literal_html`, `self_close`, `mixin_call`, etc.
-
-### AST Node Types
-
-- `element` - HTML elements with tag, classes, id, attributes, children
-- `text` - Text with segments (literal, escaped interpolation, unescaped interpolation, tag interpolation)
-- `conditional` - if/else if/else/unless branches
-- `each` - Iteration with value, optional index, else branch
-- `mixin_def` / `mixin_call` - Mixin definitions and invocations
-- `block` - Named blocks for template inheritance
-- `include` / `extends` - File inclusion and inheritance
-- `raw_text` - Literal HTML or text blocks
-
-### Runtime Value System
-
-```zig
-pub const Value = union(enum) {
-    null,
-    bool: bool,
-    int: i64,
-    float: f64,
-    string: []const u8,
-    array: []const Value,
-    object: std.StringHashMapUnmanaged(Value),
-};
-```
-
-The `toValue()` function converts Zig structs to runtime Values automatically.
+### Runtime (`runtime.zig`)
+- `escapeChar(c)` - Shared HTML escape function
+- `appendEscaped(list, allocator, str)` - Append with escaping
 
 ## Supported Pug Features
 
@@ -222,12 +229,9 @@ p.
   Multi-line
   text block
 <p>Literal HTML</p>         // passed through as-is
-
-// Interpolation-only text works too
-h1.header #{title}          // renders <h1 class="header">Title Value</h1>
 ```
 
-**Security Note**: By default, `#{}` and `=` escape HTML entities (`<`, `>`, `&`, `"`, `'`) to prevent XSS attacks. Only use `!{}` or `!=` for content you fully trust (e.g., pre-sanitized HTML from your own code). Never use unescaped output for user-provided data.
+**Security Note**: By default, `#{}` and `=` escape HTML entities (`<`, `>`, `&`, `"`, `'`) to prevent XSS attacks. Only use `!{}` or `!=` for content you fully trust.
 
 ### Tag Interpolation
 ```pug
@@ -238,11 +242,6 @@ p Click #[a(href="/") here] to continue
 ### Block Expansion
 ```pug
 a: img(src="logo.png")      // colon for inline nesting
-```
-
-### Explicit Self-Closing
-```pug
-foo/                        // renders as <foo />
 ```
 
 ### Conditionals
@@ -256,10 +255,6 @@ else
 
 unless loggedIn
   p Please login
-
-// String comparison in conditions
-if status == "active"
-  p Active
 ```
 
 ### Iteration
@@ -274,16 +269,6 @@ each item in items
   li= item
 else
   li No items
-
-// Works with objects too (key as index)
-each val, key in object
-  p #{key}: #{val}
-
-// Nested iteration with field access
-each friend in friends
-  li #{friend.name}
-  each tag in friend.tags
-    span= tag
 ```
 
 ### Case/When
@@ -304,29 +289,6 @@ mixin button(text, type="primary")
 
 +button("Click me")
 +button("Submit", "success")
-
-// With block content
-mixin card(title)
-  .card
-    h3= title
-    block
-
-+card("My Card")
-  p Card content here
-
-// Rest arguments
-mixin list(id, ...items)
-  ul(id=id)
-    each item in items
-      li= item
-
-+list("mylist", "a", "b", "c")
-
-// Attributes pass-through
-mixin link(href, text)
-  a(href=href)&attributes(attributes)= text
-
-+link("/home", "Home")(class="nav-link" data-id="1")
 ```
 
 ### Includes & Inheritance
@@ -336,13 +298,6 @@ include header.pug
 extends layout.pug
 block content
   h1 Page Title
-
-// Block modes
-block append scripts
-  script(src="extra.js")
-
-block prepend styles
-  link(rel="stylesheet" href="extra.css")
 ```
 
 ### Comments
@@ -351,136 +306,57 @@ block prepend styles
 //- This is a silent comment (not in output)
 ```
 
-## Server Usage
+## Benchmark Results (2000 iterations)
 
-### Compiled Templates (Recommended for Production)
+| Template | Time |
+|----------|------|
+| simple-0 | 0.8ms |
+| simple-1 | 11.6ms |
+| simple-2 | 8.2ms |
+| if-expression | 7.4ms |
+| projects-escaped | 7.1ms |
+| search-results | 13.4ms |
+| friends | 22.9ms |
+| **TOTAL** | **71.3ms** |
 
-Use build-time compilation for best performance. See "Build-Time Template Compilation" section above.
+## Limitations vs JS Pug
 
-### ViewEngine (Runtime Rendering)
-
-The `ViewEngine` provides runtime template rendering with lazy-loading:
-
-```zig
-const std = @import("std");
-const pugz = @import("pugz");
-
-// Initialize once at server startup
-var engine = try pugz.ViewEngine.init(allocator, .{
-    .views_dir = "src/views",     // Root views directory
-    .mixins_dir = "mixins",       // Mixins dir for lazy-loading (optional, default: "mixins")
-    .extension = ".pug",          // File extension (default: .pug)
-    .pretty = true,               // Pretty-print output (default: true)
-});
-defer engine.deinit();
-
-// In request handler - use arena allocator per request
-pub fn handleRequest(engine: *pugz.ViewEngine, allocator: std.mem.Allocator) ![]u8 {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    // Template path is relative to views_dir, extension added automatically
-    return try engine.render(arena.allocator(), "pages/home", .{
-        .title = "Home",
-        .user = .{ .name = "Alice" },
-    });
-}
-```
-
-### Mixin Resolution (Lazy Loading)
-
-Mixins are resolved in the following order:
-1. **Same template** - Mixins defined in the current template file
-2. **Mixins directory** - If not found, searches `views/mixins/*.pug` files (lazy-loaded on first use)
-
-This lazy-loading approach means:
-- Mixins are only parsed when first called
-- No upfront loading of all mixin files at server startup
-- Templates can override mixins from the mixins directory by defining them locally
-
-### Directory Structure
-
-```
-src/views/
-├── mixins/           # Lazy-loaded mixins (searched when mixin not found in template)
-│   ├── buttons.pug   # mixin btn(text), mixin btn-link(href, text)
-│   └── cards.pug     # mixin card(title), mixin card-simple(title, body)
-├── layouts/
-│   └── base.pug      # Base layout with blocks
-├── partials/
-│   ├── header.pug
-│   └── footer.pug
-└── pages/
-    ├── home.pug      # extends layouts/base
-    └── about.pug     # extends layouts/base
-```
-
-Templates can use:
-- `extends layouts/base` - Paths relative to views_dir
-- `include partials/header` - Paths relative to views_dir
-- `+btn("Click")` - Mixins from mixins/ dir loaded on-demand
-
-### Low-Level API
-
-For inline templates or custom use cases:
-
-```zig
-const std = @import("std");
-const pugz = @import("pugz");
-
-pub fn handleRequest(allocator: std.mem.Allocator) ![]u8 {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    return try pugz.renderTemplate(arena.allocator(),
-        \\html
-        \\  head
-        \\    title= title
-        \\  body
-        \\    h1 Hello, #{name}!
-        \\    if showList
-        \\      ul
-        \\        each item in items
-        \\          li= item
-    , .{
-        .title = "My Page",
-        .name = "World",
-        .showList = true,
-        .items = &[_][]const u8{ "One", "Two", "Three" },
-    });
-}
-```
-
-## Testing
-
-Run tests with `zig build test`. Tests cover:
-- Basic element parsing and rendering
-- Class and ID shorthand syntax
-- Attribute parsing (quoted, unquoted, boolean, object literals)
-- Text interpolation (escaped, unescaped, tag interpolation)
-- Interpolation-only text (e.g., `h1.class #{var}`)
-- Conditionals (if/else if/else/unless)
-- Iteration (each with index, else branch, objects, nested loops)
-- Case/when statements
-- Mixin definitions and calls (with defaults, rest args, block content, attributes)
-- Plain text (piped, dot blocks, literal HTML)
-- Self-closing tags (void elements, explicit `/`)
-- Block expansion with colon
-- Comments (rendered and silent)
-- String comparison in conditions
+1. **No JavaScript expressions**: `- var x = 1` not supported
+2. **No nested field access**: `#{user.name}` not supported, only `#{name}`
+3. **No filters**: `:markdown`, `:coffee` etc. not implemented
+4. **String fields only**: Data binding works best with `[]const u8` fields
 
 ## Error Handling
 
-The lexer and parser return errors for invalid syntax:
-- `ParserError.UnexpectedToken`
-- `ParserError.MissingCondition`
-- `ParserError.MissingMixinName`
-- `RuntimeError.ParseError` (wrapped for convenience API)
+Uses error unions with detailed `PugError` context including line, column, and source snippet:
+- `LexerError` - Tokenization errors
+- `ParserError` - Syntax errors  
+- `ViewEngineError` - Template not found, parse errors
 
-## Future Improvements
+## File Structure
 
-Potential areas for enhancement:
-- Filter support (`:markdown`, `:stylus`, etc.)
-- More complete JavaScript expression evaluation
-- Source maps for debugging
-- Mixin support in compiled templates
+```
+src/
+├── root.zig            # Public library API
+├── view_engine.zig     # High-level ViewEngine
+├── pug.zig             # Main entry point (static compilation)
+├── template.zig        # Data binding renderer
+├── lexer.zig           # Tokenizer
+├── lexer_test.zig      # Lexer tests
+├── parser.zig          # AST parser
+├── parser_test.zig     # Parser tests
+├── runtime.zig         # Shared utilities
+├── error.zig           # Error formatting
+├── walk.zig            # AST traversal
+├── strip_comments.zig  # Comment filtering
+├── load.zig            # File loading
+├── linker.zig          # Template inheritance
+├── codegen.zig         # HTML generation
+├── tests/              # Integration tests
+│   ├── general_test.zig
+│   ├── doctype_test.zig
+│   └── check_list_test.zig
+└── benchmarks/         # Performance benchmarks
+    ├── bench_v1.zig
+    └── bench_interpreted.zig
+```

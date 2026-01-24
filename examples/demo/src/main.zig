@@ -1,21 +1,15 @@
-//! Pugz Demo - Interpreted vs Compiled Templates
+//! Pugz Demo - ViewEngine Template Rendering
 //!
-//! This demo shows two approaches:
-//! 1. **Interpreted** (ViewEngine) - supports extends/blocks, parsed at runtime
-//! 2. **Compiled** (build-time) - 3x faster, templates compiled to Zig code
+//! This demo shows how to use ViewEngine for server-side rendering.
 //!
 //! Routes:
-//!   GET /              - Compiled home page (fast)
-//!   GET /users         - Compiled users list (fast)
-//!   GET /interpreted   - Interpreted with inheritance (flexible)
-//!   GET /page-a        - Interpreted page A
+//!   GET /        - Home page
+//!   GET /users   - Users list
+//!   GET /page-a  - Page with data
 
 const std = @import("std");
 const httpz = @import("httpz");
 const pugz = @import("pugz");
-
-// Compiled templates - generated at build time from views/compiled/*.pug
-const tpls = @import("tpls");
 
 const Allocator = std.mem.Allocator;
 
@@ -42,33 +36,28 @@ pub fn main() !void {
 
     var app = App.init(allocator);
 
-    const port = 8080;
+    const port = 8081;
     var server = try httpz.Server(*App).init(allocator, .{ .port = port }, &app);
     defer server.deinit();
 
     var router = try server.router(.{});
 
-    // Compiled template routes (fast - 3x faster than Pug.js)
-    router.get("/", indexCompiled, .{});
-    router.get("/users", usersCompiled, .{});
-
-    // Interpreted template routes (flexible - supports extends/blocks)
-    router.get("/interpreted", indexInterpreted, .{});
+    router.get("/", index, .{});
+    router.get("/users", users, .{});
     router.get("/page-a", pageA, .{});
+    router.get("/mixin-test", mixinTest, .{});
 
     std.debug.print(
         \\
-        \\Pugz Demo - Interpreted vs Compiled Templates
-        \\=============================================
+        \\Pugz Demo - ViewEngine Template Rendering
+        \\==========================================
         \\Server running at http://localhost:{d}
         \\
-        \\Compiled routes (3x faster than Pug.js):
-        \\  GET /        - Home page (compiled)
-        \\  GET /users   - Users list (compiled)
-        \\
-        \\Interpreted routes (supports extends/blocks):
-        \\  GET /interpreted  - Home with ViewEngine
-        \\  GET /page-a       - Page with inheritance
+        \\Routes:
+        \\  GET /        - Home page
+        \\  GET /users   - Users list
+        \\  GET /page-a  - Page with data
+        \\  GET /mixin-test - Mixin test page
         \\
         \\Press Ctrl+C to stop.
         \\
@@ -77,57 +66,10 @@ pub fn main() !void {
     try server.listen();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Compiled template handlers (fast - no parsing at runtime)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// GET / - Compiled home page
-fn indexCompiled(_: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = tpls.home(res.arena, .{
-        .title = "Welcome - Compiled",
-        .authenticated = true,
-    }) catch |err| {
-        res.status = 500;
-        res.body = @errorName(err);
-        return;
-    };
-
-    res.content_type = .HTML;
-    res.body = html;
-}
-
-/// GET /users - Compiled users list
-fn usersCompiled(_: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const User = struct {
-        name: []const u8,
-        email: []const u8,
-    };
-
-    const html = tpls.users(res.arena, .{
-        .title = "Users - Compiled",
-        .users = &[_]User{
-            .{ .name = "Alice", .email = "alice@example.com" },
-            .{ .name = "Bob", .email = "bob@example.com" },
-            .{ .name = "Charlie", .email = "charlie@example.com" },
-        },
-    }) catch |err| {
-        res.status = 500;
-        res.body = @errorName(err);
-        return;
-    };
-
-    res.content_type = .HTML;
-    res.body = html;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Interpreted template handlers (flexible - supports inheritance)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// GET /interpreted - Uses ViewEngine (parsed at runtime)
-fn indexInterpreted(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
+/// GET / - Home page
+fn index(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
     const html = app.view.render(res.arena, "index", .{
-        .title = "Home - Interpreted",
+        .title = "Welcome",
         .authenticated = true,
     }) catch |err| {
         res.status = 500;
@@ -139,13 +81,39 @@ fn indexInterpreted(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
     res.body = html;
 }
 
-/// GET /page-a - Demonstrates extends and block override
+/// GET /users - Users list
+fn users(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
+    const html = app.view.render(res.arena, "users", .{
+        .title = "Users",
+    }) catch |err| {
+        res.status = 500;
+        res.body = @errorName(err);
+        return;
+    };
+
+    res.content_type = .HTML;
+    res.body = html;
+}
+
+/// GET /page-a - Page with data
 fn pageA(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
     const html = app.view.render(res.arena, "page-a", .{
         .title = "Page A - Pets",
         .items = &[_][]const u8{ "A", "B", "C" },
         .n = 0,
     }) catch |err| {
+        res.status = 500;
+        res.body = @errorName(err);
+        return;
+    };
+
+    res.content_type = .HTML;
+    res.body = html;
+}
+
+/// GET /mixin-test - Mixin test page
+fn mixinTest(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
+    const html = app.view.render(res.arena, "mixin-test", .{}) catch |err| {
         res.status = 500;
         res.body = @errorName(err);
         return;

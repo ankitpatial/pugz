@@ -3,6 +3,7 @@ zig-out/
 zig-cache/
 .zig-cache/
 .pugz-cache/
+.claude
 node_modules
 
 # compiled template file

@@ -1,34 +1,44 @@
-//! Pugz Code Generator - Converts AST to HTML output.
-//!
-//! This module traverses the AST and generates HTML strings. It handles:
-//! - Element rendering with tags, classes, IDs, and attributes
-//! - Text content with interpolation placeholders
-//! - Proper indentation for pretty-printed output
-//! - Self-closing tags (void elements)
-//! - Comment rendering
+// codegen.zig - Zig port of pug-code-gen
+//
+// Compiles a Pug AST to HTML output.
+// This is a direct HTML generator (unlike the JS version which generates JS code).
 
 const std = @import("std");
-const ast = @import("ast.zig");
+const Allocator = std.mem.Allocator;
+const mem = std.mem;
 
-/// Configuration options for code generation.
-pub const Options = struct {
-    /// Enable pretty-printing with indentation and newlines.
-    pretty: bool = true,
-    /// Indentation string (spaces or tabs).
-    indent_str: []const u8 = "  ",
-    /// Enable self-closing tag syntax for void elements.
-    self_closing: bool = true,
-};
+// Import AST types from parser
+const parser = @import("parser.zig");
+pub const Node = parser.Node;
+pub const NodeType = parser.NodeType;
+pub const Attribute = parser.Attribute;
 
-/// Errors that can occur during code generation.
-pub const CodeGenError = error{
-    OutOfMemory,
-};
+// Import runtime for attribute handling and HTML escaping
+const runtime = @import("runtime.zig");
+pub const escapeChar = runtime.escapeChar;
 
-/// HTML void elements that should not have closing tags.
-///
-/// ref: https://developer.mozilla.org/en-US/docs/Glossary/Void_element
-const void_elements = std.StaticStringMap(void).initComptime(.{
+// Import error types
+const pug_error = @import("error.zig");
+pub const PugError = pug_error.PugError;
+
+// ============================================================================
+// Doctypes
+// ============================================================================
+
+pub const doctypes = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "html", "<!DOCTYPE html>" },
+    .{ "xml", "<?xml version=\"1.0\" encoding=\"utf-8\" ?>" },
+    .{ "transitional", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">" },
+    .{ "strict", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">" },
+    .{ "frameset", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Frameset//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-frameset.dtd\">" },
+    .{ "1.1", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">" },
+    .{ "basic", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML Basic 1.1//EN\" \"http://www.w3.org/TR/xhtml-basic/xhtml-basic11.dtd\">" },
+    .{ "mobile", "<!DOCTYPE html PUBLIC \"-//WAPFORUM//DTD XHTML Mobile 1.2//EN\" \"http://www.openmobilealliance.org/tech/DTD/xhtml-mobile12.dtd\">" },
+    .{ "plist", "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" },
+});
+
+// Self-closing (void) elements in HTML5
+pub const void_elements = std.StaticStringMap(void).initComptime(.{
     .{ "area", {} },
     .{ "base", {} },
     .{ "br", {} },
@@ -45,738 +55,861 @@ const void_elements = std.StaticStringMap(void).initComptime(.{
     .{ "wbr", {} },
 });
 
-/// Whitespace-sensitive elements where pretty-printing should be disabled.
-const whitespace_sensitive = std.StaticStringMap(void).initComptime(.{
+// Whitespace-sensitive tags
+pub const whitespace_sensitive_tags = std.StaticStringMap(void).initComptime(.{
     .{ "pre", {} },
     .{ "textarea", {} },
     .{ "script", {} },
     .{ "style", {} },
 });
 
-/// Code generator that converts AST to HTML.
-pub const CodeGen = struct {
-    allocator: std.mem.Allocator,
-    options: Options,
-    output: std.ArrayList(u8),
-    depth: usize,
-    /// Track if we're inside a whitespace-sensitive element.
-    preserve_whitespace: bool,
+// ============================================================================
+// Compiler Options
+// ============================================================================
 
-    /// Creates a new code generator with the given options.
-    pub fn init(allocator: std.mem.Allocator, options: Options) CodeGen {
-        return .{
+pub const CompilerOptions = struct {
+    /// Pretty print output with indentation
+    pretty: bool = false,
+    /// Indentation string (default: 2 spaces)
+    indent_str: []const u8 = "  ",
+    /// Use terse mode (HTML5 style: boolean attrs, > instead of />)
+    terse: bool = true,
+    /// Doctype to use
+    doctype: ?[]const u8 = null,
+    /// Include debug info
+    debug: bool = false,
+    /// Self-closing style (true = />, false = >)
+    self_closing: bool = false,
+};
+
+// ============================================================================
+// Compiler Errors
+// ============================================================================
+
+pub const CompilerError = error{
+    OutOfMemory,
+    InvalidNode,
+    UnsupportedNodeType,
+    SelfClosingContent,
+    InvalidDoctype,
+};
+
+// ============================================================================
+// Compiler
+// ============================================================================
+
+pub const Compiler = struct {
+    allocator: Allocator,
+    options: CompilerOptions,
+    output: std.ArrayListUnmanaged(u8),
+    indent_level: usize = 0,
+    has_doctype: bool = false,
+    has_tag: bool = false,
+    escape_pretty: bool = false,
+    terse: bool = true,
+    doctype_str: ?[]const u8 = null,
+
+    pub fn init(allocator: Allocator, options: CompilerOptions) Compiler {
+        var compiler = Compiler{
             .allocator = allocator,
             .options = options,
-            .output = .empty,
-            .depth = 0,
-            .preserve_whitespace = false,
+            .output = .{},
+            .terse = options.terse,
         };
+
+        // Set up doctype
+        if (options.doctype) |dt| {
+            compiler.setDoctype(dt);
+        }
+
+        return compiler;
     }
 
-    /// Releases allocated memory.
-    pub fn deinit(self: *CodeGen) void {
+    pub fn deinit(self: *Compiler) void {
         self.output.deinit(self.allocator);
     }
 
-    /// Generates HTML from the given document AST.
-    /// Returns a slice of the generated HTML owned by the CodeGen.
-    pub fn generate(self: *CodeGen, doc: ast.Document) CodeGenError![]const u8 {
-        // Pre-allocate reasonable capacity
-        try self.output.ensureTotalCapacity(self.allocator, 1024);
+    /// Compile an AST node to HTML
+    pub fn compile(self: *Compiler, node: *Node) CompilerError![]const u8 {
+        try self.visit(node);
+        return self.output.toOwnedSlice(self.allocator);
+    }
 
-        for (doc.nodes) |node| {
-            try self.visitNode(node);
+    /// Set the doctype
+    pub fn setDoctype(self: *Compiler, name: []const u8) void {
+        const lower = name; // TODO: lowercase conversion
+        if (doctypes.get(lower)) |dt| {
+            self.doctype_str = dt;
+        } else {
+            // Custom doctype
+            self.doctype_str = null;
         }
 
-        return self.output.items;
+        // HTML5 uses terse mode
+        self.terse = mem.eql(u8, lower, "html");
     }
 
-    /// Generates HTML and returns an owned copy.
-    /// Caller must free the returned slice.
-    pub fn generateOwned(self: *CodeGen, doc: ast.Document) CodeGenError![]u8 {
-        const result = try self.generate(doc);
-        return try self.allocator.dupe(u8, result);
+    // ========================================================================
+    // Output Helpers
+    // ========================================================================
+
+    fn write(self: *Compiler, str: []const u8) CompilerError!void {
+        try self.output.appendSlice(self.allocator, str);
     }
 
-    /// Visits a single AST node and generates corresponding HTML.
-    fn visitNode(self: *CodeGen, node: ast.Node) CodeGenError!void {
-        switch (node) {
-            .doctype => |dt| try self.visitDoctype(dt),
-            .element => |elem| try self.visitElement(elem),
-            .text => |text| try self.visitText(text),
-            .comment => |comment| try self.visitComment(comment),
-            .conditional => |cond| try self.visitConditional(cond),
-            .each => |each| try self.visitEach(each),
-            .@"while" => |whl| try self.visitWhile(whl),
-            .case => |c| try self.visitCase(c),
-            .mixin_def => {}, // Mixin definitions don't produce direct output
-            .mixin_call => |call| try self.visitMixinCall(call),
-            .mixin_block => {}, // Mixin block placeholder - handled at mixin call site
-            .include => |inc| try self.visitInclude(inc),
-            .extends => {}, // Handled at document level
-            .block => |blk| try self.visitBlock(blk),
-            .raw_text => |raw| try self.visitRawText(raw),
-            .code => |code| try self.visitCode(code),
-            .document => |doc| {
-                for (doc.nodes) |child| {
-                    try self.visitNode(child);
+    fn writeChar(self: *Compiler, c: u8) CompilerError!void {
+        try self.output.append(self.allocator, c);
+    }
+
+    fn writeEscaped(self: *Compiler, str: []const u8) CompilerError!void {
+        // For attribute values - escapes < > & "
+        for (str) |c| {
+            if (escapeChar(c)) |escaped| {
+                try self.write(escaped);
+            } else {
+                try self.writeChar(c);
+            }
+        }
+    }
+
+    fn writeTextEscaped(self: *Compiler, str: []const u8) CompilerError!void {
+        // For text content - escapes < > & (NOT quotes)
+        // Preserves existing HTML entities like &#8217; or &amp;
+        var i: usize = 0;
+        while (i < str.len) {
+            const c = str[i];
+            switch (c) {
+                '<' => try self.write("&lt;"),
+                '>' => try self.write("&gt;"),
+                '&' => {
+                    // Check if this is already an HTML entity
+                    if (isHtmlEntity(str[i..])) {
+                        // Pass through the entity as-is
+                        try self.writeChar(c);
+                    } else {
+                        try self.write("&amp;");
+                    }
+                },
+                else => try self.writeChar(c),
+            }
+            i += 1;
+        }
+    }
+
+    fn isHtmlEntity(str: []const u8) bool {
+        // Check if str starts with a valid HTML entity: &name; or &#digits; or &#xhex;
+        if (str.len < 3 or str[0] != '&') return false;
+
+        var i: usize = 1;
+
+        // Numeric entity: &#digits; or &#xhex;
+        if (str[i] == '#') {
+            i += 1;
+            if (i >= str.len) return false;
+
+            // Hex entity: &#x...;
+            if (str[i] == 'x' or str[i] == 'X') {
+                i += 1;
+                if (i >= str.len) return false;
+                // Need at least one hex digit
+                var has_hex = false;
+                while (i < str.len and i < 10) : (i += 1) {
+                    const ch = str[i];
+                    if (ch == ';') return has_hex;
+                    if ((ch >= '0' and ch <= '9') or
+                        (ch >= 'a' and ch <= 'f') or
+                        (ch >= 'A' and ch <= 'F'))
+                    {
+                        has_hex = true;
+                    } else {
+                        return false;
+                    }
                 }
+                return false;
+            }
+
+            // Decimal entity: &#digits;
+            var has_digit = false;
+            while (i < str.len and i < 10) : (i += 1) {
+                const ch = str[i];
+                if (ch == ';') return has_digit;
+                if (ch >= '0' and ch <= '9') {
+                    has_digit = true;
+                } else {
+                    return false;
+                }
+            }
+            return false;
+        }
+
+        // Named entity: &name;
+        var has_alpha = false;
+        while (i < str.len and i < 32) : (i += 1) {
+            const ch = str[i];
+            if (ch == ';') return has_alpha;
+            if ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9')) {
+                has_alpha = true;
+            } else {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    fn prettyIndent(self: *Compiler) CompilerError!void {
+        if (self.options.pretty and !self.escape_pretty) {
+            try self.writeChar('\n');
+            for (0..self.indent_level) |_| {
+                try self.write(self.options.indent_str);
+            }
+        }
+    }
+
+    // ========================================================================
+    // Visitor Methods
+    // ========================================================================
+
+    fn visit(self: *Compiler, node: *Node) CompilerError!void {
+        switch (node.type) {
+            .Block, .NamedBlock => try self.visitBlock(node),
+            .Tag => try self.visitTag(node),
+            .InterpolatedTag => try self.visitTag(node),
+            .Text => try self.visitText(node),
+            .Code => try self.visitCode(node),
+            .Comment => try self.visitComment(node),
+            .BlockComment => try self.visitBlockComment(node),
+            .Doctype => try self.visitDoctype(node),
+            .Mixin => try self.visitMixin(node),
+            .MixinBlock => try self.visitMixinBlock(node),
+            .Case => try self.visitCase(node),
+            .When => try self.visitWhen(node),
+            .Conditional => try self.visitConditional(node),
+            .While => try self.visitWhile(node),
+            .Each => try self.visitEach(node),
+            .EachOf => try self.visitEachOf(node),
+            .YieldBlock => {}, // No-op
+            .Include, .Extends, .RawInclude, .Filter, .IncludeFilter, .FileReference, .AttributeBlock => {
+                // These should be processed by linker/loader before codegen
+                return error.UnsupportedNodeType;
             },
         }
     }
 
-    /// Doctype shortcuts mapping
-    const doctype_shortcuts = std.StaticStringMap([]const u8).initComptime(.{
-        .{ "html", "<!DOCTYPE html>" },
-        .{ "xml", "<?xml version=\"1.0\" encoding=\"utf-8\" ?>" },
-        .{ "transitional", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">" },
-        .{ "strict", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">" },
-        .{ "frameset", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Frameset//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-frameset.dtd\">" },
-        .{ "1.1", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">" },
-        .{ "basic", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML Basic 1.1//EN\" \"http://www.w3.org/TR/xhtml-basic/xhtml-basic11.dtd\">" },
-        .{ "mobile", "<!DOCTYPE html PUBLIC \"-//WAPFORUM//DTD XHTML Mobile 1.2//EN\" \"http://www.openmobilealliance.org/tech/DTD/xhtml-mobile12.dtd\">" },
-        .{ "plist", "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" },
-    });
-
-    /// Generates doctype declaration.
-    fn visitDoctype(self: *CodeGen, dt: ast.Doctype) CodeGenError!void {
-        if (doctype_shortcuts.get(dt.value)) |output| {
-            try self.write(output);
-        } else {
-            try self.write("<!DOCTYPE ");
-            try self.write(dt.value);
-            try self.write(">");
+    fn visitBlock(self: *Compiler, block: *Node) CompilerError!void {
+        for (block.nodes.items) |child| {
+            try self.visit(child);
         }
-        try self.writeNewline();
     }
 
-    /// Generates HTML for an element node.
-    fn visitElement(self: *CodeGen, elem: ast.Element) CodeGenError!void {
-        const is_void_element = void_elements.has(elem.tag) or elem.self_closing;
-        const was_preserving = self.preserve_whitespace;
+    fn visitTag(self: *Compiler, tag: *Node) CompilerError!void {
+        const name = tag.name orelse return error.InvalidNode;
 
-        // Check if entering whitespace-sensitive element
-        if (whitespace_sensitive.has(elem.tag)) {
-            self.preserve_whitespace = true;
+        // Check for whitespace-sensitive tags - use defer to ensure state restoration
+        const was_escape_pretty = self.escape_pretty;
+        defer self.escape_pretty = was_escape_pretty;
+
+        if (whitespace_sensitive_tags.has(name)) {
+            self.escape_pretty = true;
         }
+
+        // Auto-doctype for html tag
+        if (!self.has_tag) {
+            if (!self.has_doctype and mem.eql(u8, name, "html")) {
+                try self.visitDoctype(null);
+            }
+            self.has_tag = true;
+        }
+
+        // Pretty indent before tag
+        if (self.options.pretty and !tag.is_inline) {
+            try self.prettyIndent();
+        }
+
+        self.indent_level += 1;
+        defer self.indent_level -= 1;
+
+        // Check if self-closing
+        const is_void = void_elements.has(name);
+        const is_self_closing = tag.self_closing or is_void;
 
         // Opening tag
-        try self.writeIndent();
-        try self.write("<");
-        try self.write(elem.tag);
+        try self.writeChar('<');
+        try self.write(name);
 
-        // ID attribute
-        if (elem.id) |id| {
-            try self.write(" id=\"");
-            try self.writeEscaped(id);
-            try self.write("\"");
-        }
+        // Attributes
+        try self.visitAttributes(tag);
 
-        // Class attribute
-        if (elem.classes.len > 0) {
-            try self.write(" class=\"");
-            for (elem.classes, 0..) |class, i| {
-                if (i > 0) try self.write(" ");
-                try self.writeEscaped(class);
-            }
-            try self.write("\"");
-        }
-
-        // Other attributes
-        for (elem.attributes) |attr| {
-            try self.write(" ");
-            try self.write(attr.name);
-            if (attr.value) |value| {
-                try self.write("=\"");
-                if (attr.escaped) {
-                    try self.writeEscaped(value);
-                } else {
-                    try self.write(value);
-                }
-                try self.write("\"");
+        if (is_self_closing) {
+            if (self.terse and !tag.self_closing) {
+                try self.writeChar('>');
             } else {
-                // Boolean attribute: checked -> checked="checked"
-                try self.write("=\"");
+                try self.write("/>");
+            }
+
+            // Check for content in self-closing tag
+            if (tag.nodes.items.len > 0) {
+                return error.SelfClosingContent;
+            }
+        } else {
+            try self.writeChar('>');
+
+            // Visit children
+            for (tag.nodes.items) |child| {
+                try self.visit(child);
+            }
+
+            // Pretty indent before closing tag
+            if (self.options.pretty and !tag.is_inline and !whitespace_sensitive_tags.has(name)) {
+                try self.prettyIndent();
+            }
+
+            // Closing tag
+            try self.write("</");
+            try self.write(name);
+            try self.writeChar('>');
+        }
+        // escape_pretty restoration handled by defer above
+    }
+
+    fn visitAttributes(self: *Compiler, tag: *Node) CompilerError!void {
+        for (tag.attrs.items) |attr| {
+            if (attr.val) |val| {
+                // Skip empty class/style attributes
+                if (mem.eql(u8, attr.name, "class") or mem.eql(u8, attr.name, "style")) {
+                    // Skip if value is empty, null, or undefined
+                    if (val.len == 0 or
+                        mem.eql(u8, val, "''") or
+                        mem.eql(u8, val, "\"\"") or
+                        mem.eql(u8, val, "null") or
+                        mem.eql(u8, val, "undefined"))
+                    {
+                        continue;
+                    }
+                }
+
+                // Check for boolean attributes in terse mode
+                const is_bool = mem.eql(u8, val, "true") or mem.eql(u8, val, "false");
+                if (self.terse and is_bool) {
+                    if (mem.eql(u8, val, "true")) {
+                        // Terse boolean: just the attribute name
+                        try self.writeChar(' ');
+                        try self.write(attr.name);
+                        continue;
+                    } else {
+                        // false: don't output the attribute at all
+                        continue;
+                    }
+                }
+
+                try self.writeChar(' ');
                 try self.write(attr.name);
-                try self.write("\"");
+                try self.write("=\"");
+                if (attr.must_escape) {
+                    try self.writeEscaped(val);
+                } else {
+                    try self.write(val);
+                }
+                try self.writeChar('"');
+            } else {
+                // No value - output attribute name only (boolean attribute)
+                try self.writeChar(' ');
+                try self.write(attr.name);
+            }
+        }
+    }
+
+    fn visitText(self: *Compiler, text: *Node) CompilerError!void {
+        if (text.val) |val| {
+            if (text.is_html) {
+                try self.write(val);
+            } else {
+                // Text content: only escape < > & (not quotes)
+                try self.writeTextEscaped(val);
+            }
+        }
+    }
+
+    fn visitCode(self: *Compiler, code: *Node) CompilerError!void {
+        // Code nodes contain runtime expressions
+        // In a real implementation, we would evaluate these
+        // For now, just output the value as-is if buffered
+        if (code.buffer) {
+            if (code.val) |val| {
+                if (code.must_escape) {
+                    try self.writeEscaped(val);
+                } else {
+                    try self.write(val);
+                }
             }
         }
 
-        // Close opening tag
-        if (is_void_element and self.options.self_closing) {
-            try self.write(" />");
-            try self.writeNewline();
-            self.preserve_whitespace = was_preserving;
+        // Visit block if present
+        for (code.nodes.items) |child| {
+            try self.visit(child);
+        }
+    }
+
+    fn visitComment(self: *Compiler, comment: *Node) CompilerError!void {
+        if (!comment.buffer) return;
+
+        try self.prettyIndent();
+        try self.write("<!--");
+        if (comment.val) |val| {
+            try self.write(val);
+        }
+        try self.write("-->");
+    }
+
+    fn visitBlockComment(self: *Compiler, comment: *Node) CompilerError!void {
+        if (!comment.buffer) return;
+
+        try self.prettyIndent();
+        try self.write("<!--");
+        if (comment.val) |val| {
+            try self.write(val);
+        }
+
+        // Visit block content
+        for (comment.nodes.items) |child| {
+            try self.visit(child);
+        }
+
+        try self.prettyIndent();
+        try self.write("-->");
+    }
+
+    fn visitDoctype(self: *Compiler, doctype: ?*Node) CompilerError!void {
+        if (doctype) |dt| {
+            if (dt.val) |val| {
+                self.setDoctype(val);
+            }
+        }
+
+        if (self.doctype_str) |dt_str| {
+            try self.write(dt_str);
+        } else {
+            try self.write("<!DOCTYPE html>");
+        }
+        self.has_doctype = true;
+    }
+
+    fn visitMixin(self: *Compiler, mixin: *Node) CompilerError!void {
+        // Mixin calls would be expanded at link time
+        // For now, just visit the block if it's a definition
+        if (!mixin.call) {
+            // This is a definition - skip it
             return;
         }
 
-        try self.write(">");
-
-        // Inline text
-        const has_inline_text = elem.inline_text != null and elem.inline_text.?.len > 0;
-        const has_children = elem.children.len > 0;
-
-        if (has_inline_text) {
-            try self.writeTextSegments(elem.inline_text.?);
-        }
-
-        // Children
-        if (has_children) {
-            if (!self.preserve_whitespace) {
-                try self.writeNewline();
-            }
-            self.depth += 1;
-            for (elem.children) |child| {
-                try self.visitNode(child);
-            }
-            self.depth -= 1;
-            if (!self.preserve_whitespace) {
-                try self.writeIndent();
-            }
-        }
-
-        // Closing tag (not for void elements)
-        if (!is_void_element) {
-            try self.write("</");
-            try self.write(elem.tag);
-            try self.write(">");
-            try self.writeNewline();
-        }
-
-        self.preserve_whitespace = was_preserving;
-    }
-
-    /// Generates output for a text node.
-    fn visitText(self: *CodeGen, text: ast.Text) CodeGenError!void {
-        try self.writeIndent();
-        try self.writeTextSegments(text.segments);
-        try self.writeNewline();
-    }
-
-    /// Generates HTML comment.
-    fn visitComment(self: *CodeGen, comment: ast.Comment) CodeGenError!void {
-        if (!comment.rendered) return;
-
-        try self.writeIndent();
-        try self.write("<!--");
-        if (comment.content.len > 0) {
-            try self.write(" ");
-            try self.write(comment.content);
-            try self.write(" ");
-        }
-        try self.write("-->");
-        try self.writeNewline();
-    }
-
-    /// Generates placeholder for conditional (runtime evaluation needed).
-    fn visitConditional(self: *CodeGen, cond: ast.Conditional) CodeGenError!void {
-        // Output each branch with placeholder comments
-        for (cond.branches, 0..) |branch, i| {
-            try self.writeIndent();
-            if (i == 0) {
-                if (branch.is_unless) {
-                    try self.write("<!-- unless ");
-                } else {
-                    try self.write("<!-- if ");
-                }
-                if (branch.condition) |condition| {
-                    try self.write(condition);
-                }
-                try self.write(" -->");
-            } else if (branch.condition) |condition| {
-                try self.write("<!-- else if ");
-                try self.write(condition);
-                try self.write(" -->");
-            } else {
-                try self.write("<!-- else -->");
-            }
-            try self.writeNewline();
-
-            self.depth += 1;
-            for (branch.children) |child| {
-                try self.visitNode(child);
-            }
-            self.depth -= 1;
-        }
-
-        try self.writeIndent();
-        try self.write("<!-- endif -->");
-        try self.writeNewline();
-    }
-
-    /// Generates placeholder for each loop (runtime evaluation needed).
-    fn visitEach(self: *CodeGen, each: ast.Each) CodeGenError!void {
-        try self.writeIndent();
-        try self.write("<!-- each ");
-        try self.write(each.value_name);
-        if (each.index_name) |idx| {
-            try self.write(", ");
-            try self.write(idx);
-        }
-        try self.write(" in ");
-        try self.write(each.collection);
-        try self.write(" -->");
-        try self.writeNewline();
-
-        self.depth += 1;
-        for (each.children) |child| {
-            try self.visitNode(child);
-        }
-        self.depth -= 1;
-
-        if (each.else_children.len > 0) {
-            try self.writeIndent();
-            try self.write("<!-- else -->");
-            try self.writeNewline();
-            self.depth += 1;
-            for (each.else_children) |child| {
-                try self.visitNode(child);
-            }
-            self.depth -= 1;
-        }
-
-        try self.writeIndent();
-        try self.write("<!-- endeach -->");
-        try self.writeNewline();
-    }
-
-    /// Generates placeholder for while loop (runtime evaluation needed).
-    fn visitWhile(self: *CodeGen, whl: ast.While) CodeGenError!void {
-        try self.writeIndent();
-        try self.write("<!-- while ");
-        try self.write(whl.condition);
-        try self.write(" -->");
-        try self.writeNewline();
-
-        self.depth += 1;
-        for (whl.children) |child| {
-            try self.visitNode(child);
-        }
-        self.depth -= 1;
-
-        try self.writeIndent();
-        try self.write("<!-- endwhile -->");
-        try self.writeNewline();
-    }
-
-    /// Generates placeholder for case statement (runtime evaluation needed).
-    fn visitCase(self: *CodeGen, c: ast.Case) CodeGenError!void {
-        try self.writeIndent();
-        try self.write("<!-- case ");
-        try self.write(c.expression);
-        try self.write(" -->");
-        try self.writeNewline();
-
-        for (c.whens) |when| {
-            try self.writeIndent();
-            try self.write("<!-- when ");
-            try self.write(when.value);
-            try self.write(" -->");
-            try self.writeNewline();
-
-            self.depth += 1;
-            for (when.children) |child| {
-                try self.visitNode(child);
-            }
-            self.depth -= 1;
-        }
-
-        if (c.default_children.len > 0) {
-            try self.writeIndent();
-            try self.write("<!-- default -->");
-            try self.writeNewline();
-            self.depth += 1;
-            for (c.default_children) |child| {
-                try self.visitNode(child);
-            }
-            self.depth -= 1;
-        }
-
-        try self.writeIndent();
-        try self.write("<!-- endcase -->");
-        try self.writeNewline();
-    }
-
-    /// Generates placeholder for mixin call (runtime evaluation needed).
-    fn visitMixinCall(self: *CodeGen, call: ast.MixinCall) CodeGenError!void {
-        try self.writeIndent();
-        try self.write("<!-- +");
-        try self.write(call.name);
-        try self.write(" -->");
-        try self.writeNewline();
-    }
-
-    /// Generates placeholder for include (file loading needed).
-    fn visitInclude(self: *CodeGen, inc: ast.Include) CodeGenError!void {
-        try self.writeIndent();
-        try self.write("<!-- include ");
-        try self.write(inc.path);
-        try self.write(" -->");
-        try self.writeNewline();
-    }
-
-    /// Generates content for a named block.
-    fn visitBlock(self: *CodeGen, blk: ast.Block) CodeGenError!void {
-        try self.writeIndent();
-        try self.write("<!-- block ");
-        try self.write(blk.name);
-        try self.write(" -->");
-        try self.writeNewline();
-
-        self.depth += 1;
-        for (blk.children) |child| {
-            try self.visitNode(child);
-        }
-        self.depth -= 1;
-
-        try self.writeIndent();
-        try self.write("<!-- endblock -->");
-        try self.writeNewline();
-    }
-
-    /// Generates raw text content (for script/style blocks).
-    fn visitRawText(self: *CodeGen, raw: ast.RawText) CodeGenError!void {
-        try self.writeIndent();
-        try self.write(raw.content);
-        try self.writeNewline();
-    }
-
-    /// Generates code output (escaped or unescaped).
-    fn visitCode(self: *CodeGen, code: ast.Code) CodeGenError!void {
-        try self.writeIndent();
-        if (code.escaped) {
-            try self.write("{{ ");
-        } else {
-            try self.write("{{{ ");
-        }
-        try self.write(code.expression);
-        if (code.escaped) {
-            try self.write(" }}");
-        } else {
-            try self.write(" }}}");
-        }
-        try self.writeNewline();
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Output helpers
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// Writes text segments, handling interpolation.
-    fn writeTextSegments(self: *CodeGen, segments: []const ast.TextSegment) CodeGenError!void {
-        for (segments) |seg| {
-            switch (seg) {
-                .literal => |lit| try self.writeEscaped(lit),
-                .interp_escaped => |expr| {
-                    try self.write("{{ ");
-                    try self.write(expr);
-                    try self.write(" }}");
-                },
-                .interp_unescaped => |expr| {
-                    try self.write("{{{ ");
-                    try self.write(expr);
-                    try self.write(" }}}");
-                },
-                .interp_tag => |inline_tag| {
-                    try self.writeInlineTag(inline_tag);
-                },
-            }
+        // Mixin call - visit block if present
+        for (mixin.nodes.items) |child| {
+            try self.visit(child);
         }
     }
 
-    /// Writes an inline tag from tag interpolation.
-    fn writeInlineTag(self: *CodeGen, tag: ast.InlineTag) CodeGenError!void {
-        try self.write("<");
-        try self.write(tag.tag);
-
-        // Write ID if present
-        if (tag.id) |id| {
-            try self.write(" id=\"");
-            try self.writeEscaped(id);
-            try self.write("\"");
-        }
-
-        // Write classes if present
-        if (tag.classes.len > 0) {
-            try self.write(" class=\"");
-            for (tag.classes, 0..) |class, i| {
-                if (i > 0) try self.write(" ");
-                try self.writeEscaped(class);
-            }
-            try self.write("\"");
-        }
-
-        // Write attributes
-        for (tag.attributes) |attr| {
-            if (attr.value) |value| {
-                try self.write(" ");
-                try self.write(attr.name);
-                try self.write("=\"");
-                if (attr.escaped) {
-                    try self.writeEscaped(value);
-                } else {
-                    try self.write(value);
-                }
-                try self.write("\"");
-            } else {
-                try self.write(" ");
-                try self.write(attr.name);
-                try self.write("=\"");
-                try self.write(attr.name);
-                try self.write("\"");
-            }
-        }
-
-        try self.write(">");
-
-        // Write text content (may contain nested interpolations)
-        try self.writeTextSegments(tag.text_segments);
-
-        try self.write("</");
-        try self.write(tag.tag);
-        try self.write(">");
+    fn visitMixinBlock(_: *Compiler, _: *Node) CompilerError!void {
+        // MixinBlock is a placeholder for mixin content
+        // Handled at mixin call site
     }
 
-    /// Writes indentation based on current depth.
-    fn writeIndent(self: *CodeGen) CodeGenError!void {
-        if (!self.options.pretty or self.preserve_whitespace) return;
-
-        for (0..self.depth) |_| {
-            try self.write(self.options.indent_str);
+    fn visitCase(self: *Compiler, case_node: *Node) CompilerError!void {
+        // Case/switch - visit block
+        for (case_node.nodes.items) |child| {
+            try self.visit(child);
         }
     }
 
-    /// Writes a newline if pretty-printing is enabled.
-    fn writeNewline(self: *CodeGen) CodeGenError!void {
-        if (!self.options.pretty or self.preserve_whitespace) return;
-        try self.write("\n");
-    }
-
-    /// Writes a string directly to output.
-    fn write(self: *CodeGen, str: []const u8) CodeGenError!void {
-        try self.output.appendSlice(self.allocator, str);
-    }
-
-    /// Writes a string with HTML entity escaping.
-    fn writeEscaped(self: *CodeGen, str: []const u8) CodeGenError!void {
-        for (str) |c| {
-            switch (c) {
-                '&' => try self.write("&amp;"),
-                '<' => try self.write("&lt;"),
-                '>' => try self.write("&gt;"),
-                '"' => try self.write("&quot;"),
-                '\'' => try self.write("&#x27;"),
-                else => try self.output.append(self.allocator, c),
-            }
+    fn visitWhen(self: *Compiler, when_node: *Node) CompilerError!void {
+        // When - visit block if present
+        for (when_node.nodes.items) |child| {
+            try self.visit(child);
         }
+    }
+
+    fn visitConditional(self: *Compiler, cond: *Node) CompilerError!void {
+        // In static compilation, we can't evaluate conditions
+        // Visit consequent by default
+        if (cond.consequent) |cons| {
+            try self.visit(cons);
+        }
+    }
+
+    fn visitWhile(_: *Compiler, _: *Node) CompilerError!void {
+        // While loops need runtime evaluation
+        // In static mode, skip
+    }
+
+    fn visitEach(_: *Compiler, _: *Node) CompilerError!void {
+        // Each loops need runtime evaluation
+        // In static mode, skip
+    }
+
+    fn visitEachOf(_: *Compiler, _: *Node) CompilerError!void {
+        // EachOf loops need runtime evaluation
+        // In static mode, skip
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Convenience function
-// ─────────────────────────────────────────────────────────────────────────────
+// ============================================================================
+// Convenience Functions
+// ============================================================================
 
-/// Generates HTML from an AST document with default options.
-/// Returns an owned slice that the caller must free.
-pub fn generate(allocator: std.mem.Allocator, doc: ast.Document) CodeGenError![]u8 {
-    var gen = CodeGen.init(allocator, .{});
-    defer gen.deinit();
-    return gen.generateOwned(doc);
+/// Compile an AST to HTML with default options
+pub fn compile(allocator: Allocator, ast: *Node) CompilerError![]const u8 {
+    var compiler = Compiler.init(allocator, .{});
+    defer compiler.deinit();
+    return compiler.compile(ast);
 }
 
-/// Generates HTML with custom options.
-/// Returns an owned slice that the caller must free.
-pub fn generateWithOptions(allocator: std.mem.Allocator, doc: ast.Document, options: Options) CodeGenError![]u8 {
-    var gen = CodeGen.init(allocator, options);
-    defer gen.deinit();
-    return gen.generateOwned(doc);
+/// Compile an AST to HTML with custom options
+pub fn compileWithOptions(allocator: Allocator, ast: *Node, options: CompilerOptions) CompilerError![]const u8 {
+    var compiler = Compiler.init(allocator, options);
+    defer compiler.deinit();
+    return compiler.compile(ast);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+/// Compile an AST to pretty-printed HTML
+pub fn compilePretty(allocator: Allocator, ast: *Node) CompilerError![]const u8 {
+    return compileWithOptions(allocator, ast, .{ .pretty = true });
+}
+
+// ============================================================================
 // Tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ============================================================================
 
-test "generate simple element" {
+test "compile - simple text" {
     const allocator = std.testing.allocator;
 
-    const doc = ast.Document{
-        .nodes = @constCast(&[_]ast.Node{
-            .{ .element = .{
-                .tag = "div",
-                .id = null,
-                .classes = &.{},
-                .attributes = &.{},
-                .inline_text = null,
-                .children = &.{},
-                .self_closing = false,
-            } },
-        }),
+    const text = try allocator.create(Node);
+    text.* = Node{
+        .type = .Text,
+        .val = "Hello, World!",
+        .line = 1,
+        .column = 1,
     };
 
-    const html = try generate(allocator, doc);
-    defer allocator.free(html);
+    var root = try allocator.create(Node);
+    root.* = Node{
+        .type = .Block,
+        .line = 1,
+        .column = 1,
+    };
+    try root.nodes.append(allocator, text);
 
-    try std.testing.expectEqualStrings("<div></div>\n", html);
+    defer {
+        root.deinit(allocator);
+        allocator.destroy(root);
+    }
+
+    const output = try compile(allocator, root);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("Hello, World!", output);
 }
 
-test "generate element with id and class" {
+test "compile - simple tag" {
     const allocator = std.testing.allocator;
 
-    const doc = ast.Document{
-        .nodes = @constCast(&[_]ast.Node{
-            .{ .element = .{
-                .tag = "div",
-                .id = "main",
-                .classes = &.{ "container", "active" },
-                .attributes = &.{},
-                .inline_text = null,
-                .children = &.{},
-                .self_closing = false,
-            } },
-        }),
+    const tag = try allocator.create(Node);
+    tag.* = Node{
+        .type = .Tag,
+        .name = "div",
+        .line = 1,
+        .column = 1,
     };
 
-    const html = try generate(allocator, doc);
-    defer allocator.free(html);
+    var root = try allocator.create(Node);
+    root.* = Node{
+        .type = .Block,
+        .line = 1,
+        .column = 1,
+    };
+    try root.nodes.append(allocator, tag);
 
-    try std.testing.expectEqualStrings("<div id=\"main\" class=\"container active\"></div>\n", html);
+    defer {
+        root.deinit(allocator);
+        allocator.destroy(root);
+    }
+
+    const output = try compile(allocator, root);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("<div></div>", output);
 }
 
-test "generate void element" {
+test "compile - tag with text" {
     const allocator = std.testing.allocator;
 
-    const doc = ast.Document{
-        .nodes = @constCast(&[_]ast.Node{
-            .{ .element = .{
-                .tag = "br",
-                .id = null,
-                .classes = &.{},
-                .attributes = &.{},
-                .inline_text = null,
-                .children = &.{},
-                .self_closing = false,
-            } },
-        }),
+    const text = try allocator.create(Node);
+    text.* = Node{
+        .type = .Text,
+        .val = "Hello",
+        .line = 1,
+        .column = 5,
     };
 
-    const html = try generate(allocator, doc);
-    defer allocator.free(html);
+    const tag = try allocator.create(Node);
+    tag.* = Node{
+        .type = .Tag,
+        .name = "p",
+        .line = 1,
+        .column = 1,
+    };
+    try tag.nodes.append(allocator, text);
 
-    try std.testing.expectEqualStrings("<br />\n", html);
+    var root = try allocator.create(Node);
+    root.* = Node{
+        .type = .Block,
+        .line = 1,
+        .column = 1,
+    };
+    try root.nodes.append(allocator, tag);
+
+    defer {
+        root.deinit(allocator);
+        allocator.destroy(root);
+    }
+
+    const output = try compile(allocator, root);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("<p>Hello</p>", output);
 }
 
-test "generate nested elements" {
+test "compile - tag with attributes" {
     const allocator = std.testing.allocator;
 
-    var inner_text = [_]ast.TextSegment{.{ .literal = "Hello" }};
-    var inner_node = [_]ast.Node{
-        .{ .element = .{
-            .tag = "p",
-            .id = null,
-            .classes = &.{},
-            .attributes = &.{},
-            .inline_text = &inner_text,
-            .children = &.{},
-            .self_closing = false,
-        } },
+    const tag = try allocator.create(Node);
+    tag.* = Node{
+        .type = .Tag,
+        .name = "a",
+        .line = 1,
+        .column = 1,
     };
+    try tag.attrs.append(allocator, .{
+        .name = "href",
+        .val = "/home",
+        .line = 1,
+        .column = 3,
+        .filename = null,
+        .must_escape = true,
+    });
 
-    const doc = ast.Document{
-        .nodes = @constCast(&[_]ast.Node{
-            .{ .element = .{
-                .tag = "div",
-                .id = null,
-                .classes = &.{},
-                .attributes = &.{},
-                .inline_text = null,
-                .children = &inner_node,
-                .self_closing = false,
-            } },
-        }),
+    var root = try allocator.create(Node);
+    root.* = Node{
+        .type = .Block,
+        .line = 1,
+        .column = 1,
     };
+    try root.nodes.append(allocator, tag);
 
-    const html = try generate(allocator, doc);
-    defer allocator.free(html);
+    defer {
+        root.deinit(allocator);
+        allocator.destroy(root);
+    }
 
-    const expected =
-        \\<div>
-        \\  <p>Hello</p>
-        \\</div>
-        \\
-    ;
+    const output = try compile(allocator, root);
+    defer allocator.free(output);
 
-    try std.testing.expectEqualStrings(expected, html);
+    try std.testing.expectEqualStrings("<a href=\"/home\"></a>", output);
 }
 
-test "generate with interpolation" {
+test "compile - self-closing tag" {
     const allocator = std.testing.allocator;
 
-    var inline_text = [_]ast.TextSegment{
-        .{ .literal = "Hello, " },
-        .{ .interp_escaped = "name" },
-        .{ .literal = "!" },
+    const tag = try allocator.create(Node);
+    tag.* = Node{
+        .type = .Tag,
+        .name = "br",
+        .line = 1,
+        .column = 1,
     };
 
-    const doc = ast.Document{
-        .nodes = @constCast(&[_]ast.Node{
-            .{ .element = .{
-                .tag = "p",
-                .id = null,
-                .classes = &.{},
-                .attributes = &.{},
-                .inline_text = &inline_text,
-                .children = &.{},
-                .self_closing = false,
-            } },
-        }),
+    var root = try allocator.create(Node);
+    root.* = Node{
+        .type = .Block,
+        .line = 1,
+        .column = 1,
     };
+    try root.nodes.append(allocator, tag);
 
-    const html = try generate(allocator, doc);
-    defer allocator.free(html);
+    defer {
+        root.deinit(allocator);
+        allocator.destroy(root);
+    }
 
-    try std.testing.expectEqualStrings("<p>Hello, {{ name }}!</p>\n", html);
+    const output = try compile(allocator, root);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("<br>", output);
 }
 
-test "generate html comment" {
+test "compile - nested tags" {
     const allocator = std.testing.allocator;
 
-    const doc = ast.Document{
-        .nodes = @constCast(&[_]ast.Node{
-            .{ .comment = .{
-                .content = "This is a comment",
-                .rendered = true,
-                .children = &.{},
-            } },
-        }),
+    const span = try allocator.create(Node);
+    span.* = Node{
+        .type = .Tag,
+        .name = "span",
+        .line = 2,
+        .column = 3,
     };
 
-    const html = try generate(allocator, doc);
-    defer allocator.free(html);
+    const div = try allocator.create(Node);
+    div.* = Node{
+        .type = .Tag,
+        .name = "div",
+        .line = 1,
+        .column = 1,
+    };
+    try div.nodes.append(allocator, span);
 
-    try std.testing.expectEqualStrings("<!-- This is a comment -->\n", html);
+    var root = try allocator.create(Node);
+    root.* = Node{
+        .type = .Block,
+        .line = 1,
+        .column = 1,
+    };
+    try root.nodes.append(allocator, div);
+
+    defer {
+        root.deinit(allocator);
+        allocator.destroy(root);
+    }
+
+    const output = try compile(allocator, root);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("<div><span></span></div>", output);
 }
 
-test "escape html entities" {
+test "compile - doctype" {
     const allocator = std.testing.allocator;
 
-    var inline_text = [_]ast.TextSegment{.{ .literal = "<script>alert('xss')</script>" }};
-
-    const doc = ast.Document{
-        .nodes = @constCast(&[_]ast.Node{
-            .{ .element = .{
-                .tag = "p",
-                .id = null,
-                .classes = &.{},
-                .attributes = &.{},
-                .inline_text = &inline_text,
-                .children = &.{},
-                .self_closing = false,
-            } },
-        }),
+    const doctype = try allocator.create(Node);
+    doctype.* = Node{
+        .type = .Doctype,
+        .val = "html",
+        .line = 1,
+        .column = 1,
     };
 
-    const html = try generate(allocator, doc);
-    defer allocator.free(html);
+    var root = try allocator.create(Node);
+    root.* = Node{
+        .type = .Block,
+        .line = 1,
+        .column = 1,
+    };
+    try root.nodes.append(allocator, doctype);
 
-    try std.testing.expectEqualStrings("<p>&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;</p>\n", html);
+    defer {
+        root.deinit(allocator);
+        allocator.destroy(root);
+    }
+
+    const output = try compile(allocator, root);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("<!DOCTYPE html>", output);
+}
+
+test "compile - comment" {
+    const allocator = std.testing.allocator;
+
+    const comment = try allocator.create(Node);
+    comment.* = Node{
+        .type = .Comment,
+        .val = " this is a comment ",
+        .buffer = true,
+        .line = 1,
+        .column = 1,
+    };
+
+    var root = try allocator.create(Node);
+    root.* = Node{
+        .type = .Block,
+        .line = 1,
+        .column = 1,
+    };
+    try root.nodes.append(allocator, comment);
+
+    defer {
+        root.deinit(allocator);
+        allocator.destroy(root);
+    }
+
+    const output = try compile(allocator, root);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("<!-- this is a comment -->", output);
+}
+
+test "compile - text escaping" {
+    const allocator = std.testing.allocator;
+
+    const text = try allocator.create(Node);
+    text.* = Node{
+        .type = .Text,
+        .val = "<script>alert('xss')</script>",
+        .line = 1,
+        .column = 1,
+    };
+
+    var root = try allocator.create(Node);
+    root.* = Node{
+        .type = .Block,
+        .line = 1,
+        .column = 1,
+    };
+    try root.nodes.append(allocator, text);
+
+    defer {
+        root.deinit(allocator);
+        allocator.destroy(root);
+    }
+
+    const output = try compile(allocator, root);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("&lt;script&gt;alert('xss')&lt;/script&gt;", output);
+}
+
+test "compile - pretty print" {
+    const allocator = std.testing.allocator;
+
+    const inner = try allocator.create(Node);
+    inner.* = Node{
+        .type = .Tag,
+        .name = "span",
+        .line = 2,
+        .column = 3,
+    };
+
+    const outer = try allocator.create(Node);
+    outer.* = Node{
+        .type = .Tag,
+        .name = "div",
+        .line = 1,
+        .column = 1,
+    };
+    try outer.nodes.append(allocator, inner);
+
+    var root = try allocator.create(Node);
+    root.* = Node{
+        .type = .Block,
+        .line = 1,
+        .column = 1,
+    };
+    try root.nodes.append(allocator, outer);
+
+    defer {
+        root.deinit(allocator);
+        allocator.destroy(root);
+    }
+
+    const output = try compilePretty(allocator, root);
+    defer allocator.free(output);
+
+    // Pretty output has newlines and indentation
+    try std.testing.expect(mem.indexOf(u8, output, "\n") != null);
 }

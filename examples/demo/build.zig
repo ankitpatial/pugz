@@ -14,13 +14,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Compile templates at build time using pugz's build_templates
-    // Generates views/generated.zig with all templates
-    const build_templates = @import("pugz").build_templates;
-    const compiled_templates = build_templates.compileTemplates(b, .{
-        .source_dir = "views",
-    });
-
     // Main executable
     const exe = b.addExecutable(.{
         .name = "demo",
@@ -31,7 +24,6 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "pugz", .module = pugz_dep.module("pugz") },
                 .{ .name = "httpz", .module = httpz_dep.module("httpz") },
-                .{ .name = "tpls", .module = compiled_templates },
             },
         }),
     });

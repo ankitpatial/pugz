@@ -1,6 +1,5 @@
-*Yet not ready to use in production, i tried to get it done using Cluade but its not quite there where i want it*
-
-*So i will try it by my self keeping PugJS version as a reference*
+*! I am using ClaudeCode to build it*
+*! Its Yet not ready for production use*
 
 # Pugz
 
