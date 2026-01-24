@@ -26,6 +26,8 @@ pub const CodeGenError = error{
 };
 
 /// HTML void elements that should not have closing tags.
+///
+/// ref: https://developer.mozilla.org/en-US/docs/Glossary/Void_element
 const void_elements = std.StaticStringMap(void).initComptime(.{
     .{ "area", {} },
     .{ "base", {} },
@@ -150,7 +152,7 @@ pub const CodeGen = struct {
 
     /// Generates HTML for an element node.
     fn visitElement(self: *CodeGen, elem: ast.Element) CodeGenError!void {
-        const is_void = void_elements.has(elem.tag) or elem.self_closing;
+        const is_void_element = void_elements.has(elem.tag) or elem.self_closing;
         const was_preserving = self.preserve_whitespace;
 
         // Check if entering whitespace-sensitive element
@@ -201,7 +203,7 @@ pub const CodeGen = struct {
         }
 
         // Close opening tag
-        if (is_void and self.options.self_closing) {
+        if (is_void_element and self.options.self_closing) {
             try self.write(" />");
             try self.writeNewline();
             self.preserve_whitespace = was_preserving;
@@ -234,7 +236,7 @@ pub const CodeGen = struct {
         }
 
         // Closing tag (not for void elements)
-        if (!is_void) {
+        if (!is_void_element) {
             try self.write("</");
             try self.write(elem.tag);
             try self.write(">");

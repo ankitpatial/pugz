@@ -77,12 +77,6 @@ pub fn index(a: Allocator, d: anytype) Allocator.Error![]u8 {
     {
         const text = "click me ";
         const @"type" = "secondary";
-        const mixin_attrs_1: struct {
-            class: []const u8 = "",
-            id: []const u8 = "",
-            style: []const u8 = "",
-        } = .{
-        };
         try o.appendSlice(a, "<button");
         try o.appendSlice(a, " class=\"");
         try o.appendSlice(a, "btn btn-");
@@ -90,7 +84,6 @@ pub fn index(a: Allocator, d: anytype) Allocator.Error![]u8 {
         try o.appendSlice(a, "\"");
         try o.appendSlice(a, ">");
         try esc(&o, a, strVal(text));
-        _ = mixin_attrs_1;
         try o.appendSlice(a, "</button>");
     }
     try o.appendSlice(a, "</body><br /><a href=\"//google.com\" target=\"_blank\">Google 1</a><br /><a class=\"button\" href=\"//google.com\" target=\"_blank\">Google 2</a><br /><a class=\"button\" href=\"//google.com\" target=\"_blank\">Google 3</a></html>");
@@ -167,12 +160,6 @@ pub fn page_a(a: Allocator, d: anytype) Allocator.Error![]u8 {
         const name = "firstName";
         const label = "First Name";
         const placeholder = "first name";
-        const mixin_attrs_1: struct {
-            class: []const u8 = "",
-            id: []const u8 = "",
-            style: []const u8 = "",
-        } = .{
-        };
         try o.appendSlice(a, "<fieldset class=\"fieldset\"><legend class=\"fieldset-legend\">");
         try esc(&o, a, strVal(label));
         try o.appendSlice(a, "</legend><input class=\"input\" type=\"text\"");
@@ -182,7 +169,6 @@ pub fn page_a(a: Allocator, d: anytype) Allocator.Error![]u8 {
         try o.appendSlice(a, " placeholder=\"");
         try o.appendSlice(a, strVal(placeholder));
         try o.appendSlice(a, "\"");
-        _ = mixin_attrs_1;
         try o.appendSlice(a, " /></fieldset>");
     }
     try o.appendSlice(a, "<br />");
@@ -190,12 +176,6 @@ pub fn page_a(a: Allocator, d: anytype) Allocator.Error![]u8 {
         const name = "lastName";
         const label = "Last Name";
         const placeholder = "last name";
-        const mixin_attrs_1: struct {
-            class: []const u8 = "",
-            id: []const u8 = "",
-            style: []const u8 = "",
-        } = .{
-        };
         try o.appendSlice(a, "<fieldset class=\"fieldset\"><legend class=\"fieldset-legend\">");
         try esc(&o, a, strVal(label));
         try o.appendSlice(a, "</legend><input class=\"input\" type=\"text\"");
@@ -205,21 +185,14 @@ pub fn page_a(a: Allocator, d: anytype) Allocator.Error![]u8 {
         try o.appendSlice(a, " placeholder=\"");
         try o.appendSlice(a, strVal(placeholder));
         try o.appendSlice(a, "\"");
-        _ = mixin_attrs_1;
         try o.appendSlice(a, " /></fieldset>");
     }
     try o.appendSlice(a, "<submit>sumit</submit>");
     if (@hasField(@TypeOf(d), "error") and truthy(@field(d, "error"))) {
         {
             const message = @field(d, "error");
-            const mixin_attrs_1: struct {
-                class: []const u8 = "",
-                id: []const u8 = "",
-                style: []const u8 = "",
-            } = .{
-            };
             {
-                const mixin_attrs_2: struct {
+                const mixin_attrs_1: struct {
                     class: []const u8 = "",
                     id: []const u8 = "",
                     style: []const u8 = "",
@@ -229,13 +202,12 @@ pub fn page_a(a: Allocator, d: anytype) Allocator.Error![]u8 {
                 try o.appendSlice(a, "<div");
                 try o.appendSlice(a, " class=\"");
                 try o.appendSlice(a, "alert ");
-                try o.appendSlice(a, strVal(mixin_attrs_2.class));
+                try o.appendSlice(a, strVal(mixin_attrs_1.class));
                 try o.appendSlice(a, "\"");
                 try o.appendSlice(a, " role=\"alert\"><svg class=\"h-6 w-6 shrink-0 stroke-current\" xmlns=\"http://www.w3.org/2000/svg\" fill=\"none\" viewBox=\"0 0 24 24\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z\"></path></svg><span>");
                 try esc(&o, a, strVal(message));
                 try o.appendSlice(a, "</span></div>");
             }
-            _ = mixin_attrs_1;
         }
     }
     try o.appendSlice(a, "</form><div id=\"footer\"><p>some footer content</p></div></body></html>");

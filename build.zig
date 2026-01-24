@@ -59,6 +59,19 @@ pub fn build(b: *std.Build) void {
     });
     const run_inheritance_tests = b.addRunArtifact(inheritance_tests);
 
+    // Integration tests - check_list tests (pug files vs expected html output)
+    const check_list_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests/check_list_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pugz", .module = mod },
+            },
+        }),
+    });
+    const run_check_list_tests = b.addRunArtifact(check_list_tests);
+
     // A top level step for running all tests. dependOn can be called multiple
     // times and since the two run steps do not depend on one another, this will
     // make the two of them run in parallel.
@@ -67,6 +80,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_general_tests.step);
     test_step.dependOn(&run_doctype_tests.step);
     test_step.dependOn(&run_inheritance_tests.step);
+    test_step.dependOn(&run_check_list_tests.step);
 
     // Individual test steps
     const test_general_step = b.step("test-general", "Run general template tests");
@@ -80,6 +94,9 @@ pub fn build(b: *std.Build) void {
 
     const test_unit_step = b.step("test-unit", "Run unit tests (lexer, parser, etc.)");
     test_unit_step.dependOn(&run_mod_tests.step);
+
+    const test_check_list_step = b.step("test-check-list", "Run check_list template tests");
+    test_check_list_step.dependOn(&run_check_list_tests.step);
 
     // ─────────────────────────────────────────────────────────────────────────
     // Compiled Templates Benchmark (compare with Pug.js bench.js)

@@ -52,6 +52,8 @@ pub const Runtime = runtime.Runtime;
 pub const Context = runtime.Context;
 pub const Value = runtime.Value;
 pub const render = runtime.render;
+pub const renderWithOptions = runtime.renderWithOptions;
+pub const RenderOptions = runtime.RenderOptions;
 pub const renderTemplate = runtime.renderTemplate;
 
 // High-level API

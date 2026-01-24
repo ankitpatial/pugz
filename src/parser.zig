@@ -172,11 +172,21 @@ pub const Parser = struct {
             .kw_prepend => try self.parseBlockShorthand(.prepend),
             .pipe_text => try self.parsePipeText(),
             .comment, .comment_unbuffered => try self.parseComment(),
+            .unbuffered_code => {
+                // Unbuffered JS code (- var x = 1) - skip entire line
+                _ = self.advance();
+                return null;
+            },
             .buffered_text => try self.parseBufferedCode(true),
             .unescaped_text => try self.parseBufferedCode(false),
             .text => try self.parseText(),
             .literal_html => try self.parseLiteralHtml(),
-            .newline, .indent, .dedent, .eof => null,
+            .newline, .eof => null,
+            .indent, .dedent => {
+                // Consume structural tokens to prevent infinite loops
+                _ = self.advance();
+                return null;
+            },
             else => {
                 // Skip unknown tokens to prevent infinite loops
                 _ = self.advance();
@@ -220,6 +230,15 @@ pub const Parser = struct {
             }
         }
 
+        // Parse additional classes and ids after attributes (e.g., a.foo(href='/').bar)
+        while (self.check(.class) or self.check(.id)) {
+            if (self.check(.class)) {
+                try classes.append(self.allocator, self.advance().value);
+            } else if (self.check(.id)) {
+                id = self.advance().value;
+            }
+        }
+
         // Parse &attributes({...})
         if (self.check(.ampersand_attrs)) {
             _ = self.advance(); // skip &attributes
@@ -247,17 +266,20 @@ pub const Parser = struct {
                 try children.append(self.allocator, child);
             }
 
-            return .{ .element = .{
-                .tag = tag,
-                .classes = try classes.toOwnedSlice(self.allocator),
-                .id = id,
-                .attributes = try attributes.toOwnedSlice(self.allocator),
-                .spread_attributes = spread_attributes,
-                .children = try children.toOwnedSlice(self.allocator),
-                .self_closing = self_closing,
-                .inline_text = null,
-                .buffered_code = null,
-            } };
+            return .{
+                .element = .{
+                    .tag = tag,
+                    .classes = try classes.toOwnedSlice(self.allocator),
+                    .id = id,
+                    .attributes = try attributes.toOwnedSlice(self.allocator),
+                    .spread_attributes = spread_attributes,
+                    .children = try children.toOwnedSlice(self.allocator),
+                    .self_closing = self_closing,
+                    .inline_text = null,
+                    .buffered_code = null,
+                    .is_inline = true, // Block expansion renders children inline
+                },
+            };
         }
 
         // Parse inline text or buffered code if present
@@ -502,16 +524,26 @@ pub const Parser = struct {
         var lines = std.ArrayList(u8).empty;
         errdefer lines.deinit(self.allocator);
 
+        var line_count: usize = 0;
         while (!self.check(.dedent) and !self.isAtEnd()) {
             if (self.check(.text)) {
+                // Add newline before each line except the first
+                if (line_count > 0) {
+                    try lines.append(self.allocator, '\n');
+                }
+                line_count += 1;
                 const text = self.advance().value;
                 try lines.appendSlice(self.allocator, text);
-                try lines.append(self.allocator, '\n');
             } else if (self.check(.newline)) {
                 _ = self.advance();
             } else {
                 break;
             }
+        }
+
+        // Add trailing newline only for multi-line content (for proper formatting)
+        if (line_count > 1) {
+            try lines.append(self.allocator, '\n');
         }
 
         if (self.check(.dedent)) {
@@ -1118,10 +1150,7 @@ pub const Parser = struct {
 
         const segments = try self.parseTextSegments();
 
-        return .{ .text = .{
-            .segments = segments,
-            .is_piped = true,
-        } };
+        return .{ .text = .{ .segments = segments } };
     }
 
     /// Parses literal HTML (lines starting with <).
@@ -1133,17 +1162,27 @@ pub const Parser = struct {
     /// Parses comment.
     fn parseComment(self: *Parser) Error!Node {
         const rendered = self.check(.comment);
-        const content = self.advance().value;
+        const content = self.advance().value; // Preserve content exactly as captured (including leading space)
 
         self.skipNewlines();
 
-        // Parse nested comment content
+        // Parse nested comment content ONLY if this is a block comment
+        // Block comment: comment with no inline content, followed by indented block
+        // e.g., "//" on its own line followed by indented content
+        // vs inline comment: "// some text" which has no children
         var children = std.ArrayList(Node).empty;
         errdefer children.deinit(self.allocator);
 
+        // Block comments can have indented content
+        // This includes both empty comments (//) and comments with text (// block)
+        // followed by indented content
         if (self.check(.indent)) {
             _ = self.advance();
-            try self.parseChildren(&children);
+            // Capture all content until dedent as raw text
+            const raw_content = try self.parseBlockCommentContent();
+            if (raw_content.len > 0) {
+                try children.append(self.allocator, .{ .raw_text = .{ .content = raw_content } });
+            }
         }
 
         return .{ .comment = .{
@@ -1151,6 +1190,39 @@ pub const Parser = struct {
             .rendered = rendered,
             .children = try children.toOwnedSlice(self.allocator),
         } };
+    }
+
+    /// Parses block comment content - collects raw text tokens until dedent
+    fn parseBlockCommentContent(self: *Parser) Error![]const u8 {
+        var lines = std.ArrayList(u8).empty;
+        errdefer lines.deinit(self.allocator);
+
+        while (!self.isAtEnd()) {
+            const token = self.peek();
+
+            switch (token.type) {
+                .dedent => {
+                    _ = self.advance();
+                    break;
+                },
+                .newline => {
+                    try lines.append(self.allocator, '\n');
+                    _ = self.advance();
+                },
+                .text => {
+                    // Raw text from comment block mode
+                    try lines.appendSlice(self.allocator, token.value);
+                    _ = self.advance();
+                },
+                .eof => break,
+                else => {
+                    // Skip any unexpected tokens
+                    _ = self.advance();
+                },
+            }
+        }
+
+        return lines.toOwnedSlice(self.allocator);
     }
 
     /// Parses buffered code output (= or !=).
@@ -1168,11 +1240,7 @@ pub const Parser = struct {
     /// Parses plain text node.
     fn parseText(self: *Parser) Error!Node {
         const segments = try self.parseTextSegments();
-
-        return .{ .text = .{
-            .segments = segments,
-            .is_piped = false,
-        } };
+        return .{ .text = .{ .segments = segments } };
     }
 
     /// Parses rest of line as text.

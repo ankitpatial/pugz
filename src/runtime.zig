@@ -121,6 +121,10 @@ pub const RuntimeError = error{
     TypeError,
     InvalidExpression,
     ParseError,
+    /// Template include/extends depth exceeded maximum (prevents infinite recursion)
+    MaxIncludeDepthExceeded,
+    /// Template path attempts to escape base directory (security violation)
+    PathTraversalDetected,
 };
 
 /// Template rendering context with variable scopes.
@@ -257,6 +261,8 @@ pub const Runtime = struct {
     mixin_block_content: ?[]const ast.Node,
     /// Current mixin attributes (for `attributes` variable inside mixins).
     mixin_attributes: ?[]const ast.Attribute,
+    /// Current include/extends depth (for recursion protection).
+    include_depth: usize,
 
     pub const Options = struct {
         pretty: bool = true,
@@ -269,6 +275,9 @@ pub const Runtime = struct {
         /// Directory containing mixin files for lazy-loading.
         /// If set, mixins not found in template will be loaded from here.
         mixins_dir: []const u8 = "",
+        /// Maximum depth for include/extends to prevent infinite recursion.
+        /// Set to 0 to disable the limit (not recommended).
+        max_include_depth: usize = 100,
     };
 
     /// Error type for runtime operations.
@@ -287,6 +296,7 @@ pub const Runtime = struct {
             .blocks = .empty,
             .mixin_block_content = null,
             .mixin_attributes = null,
+            .include_depth = 0,
         };
     }
 
@@ -334,7 +344,16 @@ pub const Runtime = struct {
     }
 
     /// Loads and parses a template file.
+    /// Security: Validates path doesn't escape base_dir and enforces include depth limit.
     fn loadTemplate(self: *Runtime, path: []const u8) Error!ast.Document {
+        // Security: Prevent infinite recursion via circular includes/extends
+        const max_depth = self.options.max_include_depth;
+        if (max_depth > 0 and self.include_depth >= max_depth) {
+            log.err("maximum include depth ({d}) exceeded - possible circular reference", .{max_depth});
+            return error.MaxIncludeDepthExceeded;
+        }
+        self.include_depth += 1;
+
         const resolver = self.file_resolver orelse return error.TemplateNotFound;
 
         // Resolve path (add .pug extension if needed)
@@ -343,9 +362,21 @@ pub const Runtime = struct {
             resolved_path = try std.fmt.allocPrint(self.allocator, "{s}.pug", .{path});
         }
 
+        // Security: Reject absolute paths when base_dir is set (prevents /etc/passwd access)
+        if (self.base_dir.len > 0 and std.fs.path.isAbsolute(resolved_path)) {
+            log.err("absolute paths not allowed in include/extends: {s}", .{resolved_path});
+            return error.PathTraversalDetected;
+        }
+
+        // Security: Check for path traversal attempts (../ sequences)
+        if (std.mem.indexOf(u8, resolved_path, "..")) |_| {
+            log.err("path traversal detected in include/extends: {s}", .{resolved_path});
+            return error.PathTraversalDetected;
+        }
+
         // Prepend base directory if path is relative
         var full_path = resolved_path;
-        if (self.base_dir.len > 0 and !std.fs.path.isAbsolute(resolved_path)) {
+        if (self.base_dir.len > 0) {
             full_path = try std.fs.path.join(self.allocator, &.{ self.base_dir, resolved_path });
         }
 
@@ -391,6 +422,102 @@ pub const Runtime = struct {
         }
     }
 
+    /// Renders a node inline (no indentation, no trailing newline).
+    /// Used for block expansion (`:` syntax) where children render on same line.
+    fn visitNodeInline(self: *Runtime, node: ast.Node) Error!void {
+        switch (node) {
+            .element => |elem| try self.visitElementInline(elem),
+            .text => |text| try self.writeTextSegments(text.segments),
+            else => try self.visitNode(node), // Fall back to normal rendering
+        }
+    }
+
+    /// Renders an element inline (no indentation, no trailing newline).
+    fn visitElementInline(self: *Runtime, elem: ast.Element) Error!void {
+        const has_content = (elem.inline_text != null and elem.inline_text.?.len > 0) or
+            elem.buffered_code != null or elem.children.len > 0;
+        const is_void = (isVoidElement(elem.tag) or elem.self_closing) and !has_content;
+
+        try self.write("<");
+        try self.write(elem.tag);
+
+        if (elem.id) |id| {
+            try self.write(" id=\"");
+            try self.writeEscaped(id);
+            try self.write("\"");
+        }
+
+        // Output classes
+        if (elem.classes.len > 0) {
+            try self.write(" class=\"");
+            for (elem.classes, 0..) |class, i| {
+                if (i > 0) try self.write(" ");
+                try self.writeEscaped(class);
+            }
+            try self.write("\"");
+        }
+
+        // Output attributes
+        for (elem.attributes) |attr| {
+            if (attr.value) |value| {
+                try self.write(" ");
+                try self.write(attr.name);
+                try self.write("=\"");
+                var evaluated: []const u8 = undefined;
+                if (value.len >= 2 and (value[0] == '"' or value[0] == '\'' or value[0] == '`')) {
+                    evaluated = try self.evaluateString(value);
+                } else {
+                    const expr_value = self.evaluateExpression(value);
+                    evaluated = try expr_value.toString(self.allocator);
+                }
+                if (attr.escaped) {
+                    try self.writeEscaped(evaluated);
+                } else {
+                    try self.write(evaluated);
+                }
+                try self.write("\"");
+            } else {
+                try self.write(" ");
+                try self.write(attr.name);
+                try self.write("=\"");
+                try self.write(attr.name);
+                try self.write("\"");
+            }
+        }
+
+        if (is_void) {
+            try self.write("/>");
+            return;
+        }
+
+        try self.write(">");
+
+        // Render inline text
+        if (elem.inline_text) |text| {
+            try self.writeTextSegments(text);
+        }
+
+        // Render buffered code
+        if (elem.buffered_code) |code| {
+            const value = self.evaluateExpression(code.expression);
+            const str = try value.toString(self.allocator);
+            if (code.escaped) {
+                try self.writeTextEscaped(str);
+            } else {
+                try self.write(str);
+            }
+        }
+
+        // Render children inline
+        for (elem.children) |child| {
+            try self.visitNodeInline(child);
+        }
+
+        try self.write("</");
+        try self.write(elem.tag);
+        try self.write(">");
+    }
+
     /// Doctype shortcuts mapping
     const doctype_shortcuts = std.StaticStringMap([]const u8).initComptime(.{
         .{ "html", "<!DOCTYPE html>" },
@@ -418,7 +545,10 @@ pub const Runtime = struct {
     }
 
     fn visitElement(self: *Runtime, elem: ast.Element) Error!void {
-        const is_void = isVoidElement(elem.tag) or elem.self_closing;
+        // Void elements can be self-closed, but only if they have no content
+        const has_content = (elem.inline_text != null and elem.inline_text.?.len > 0) or
+            elem.buffered_code != null or elem.children.len > 0;
+        const is_void = (isVoidElement(elem.tag) or elem.self_closing) and !has_content;
 
         try self.writeIndent();
         try self.write("<");
@@ -430,7 +560,8 @@ pub const Runtime = struct {
             try self.write("\"");
         }
 
-        // Collect all classes: shorthand classes + class attributes (may be arrays)
+        // Collect all classes first: shorthand classes + class attributes (may be arrays)
+        // Class attribute must be output before other attributes per Pug convention
         var all_classes = std.ArrayList(u8).empty;
         defer all_classes.deinit(self.allocator);
 
@@ -440,18 +571,17 @@ pub const Runtime = struct {
             try all_classes.appendSlice(self.allocator, class);
         }
 
-        // Process attributes, collecting class values separately
+        // Collect class values from attributes
         for (elem.attributes) |attr| {
             if (std.mem.eql(u8, attr.name, "class")) {
-                // Handle class attribute - may be array literal or expression
                 if (attr.value) |value| {
                     var evaluated: []const u8 = undefined;
 
-                    // Check if it's an array literal
                     if (value.len >= 1 and value[0] == '[') {
                         evaluated = try parseArrayToSpaceSeparated(self.allocator, value);
+                    } else if (value.len >= 1 and value[0] == '{') {
+                        evaluated = try parseObjectToClassList(self.allocator, value);
                     } else {
-                        // Evaluate as expression (handles "str" + var concatenation)
                         const expr_value = self.evaluateExpression(value);
                         evaluated = try expr_value.toString(self.allocator);
                     }
@@ -463,42 +593,45 @@ pub const Runtime = struct {
                         try all_classes.appendSlice(self.allocator, evaluated);
                     }
                 }
-                continue; // Don't output class as regular attribute
             }
+        }
+
+        // Output combined class attribute immediately after id (before other attributes)
+        if (all_classes.items.len > 0) {
+            try self.write(" class=\"");
+            try self.writeEscaped(all_classes.items);
+            try self.write("\"");
+        }
+
+        // Output other attributes (skip class since already handled)
+        for (elem.attributes) |attr| {
+            if (std.mem.eql(u8, attr.name, "class")) continue;
 
             if (attr.value) |value| {
                 // Handle boolean literals: true -> checked="checked", false -> omit
                 if (std.mem.eql(u8, value, "true")) {
-                    // true becomes attribute="attribute"
                     try self.write(" ");
                     try self.write(attr.name);
                     try self.write("=\"");
                     try self.write(attr.name);
                     try self.write("\"");
                 } else if (std.mem.eql(u8, value, "false")) {
-                    // false omits the attribute entirely
                     continue;
                 } else {
                     try self.write(" ");
                     try self.write(attr.name);
                     try self.write("=\"");
-                    // Evaluate attribute value - could be a quoted string, object/array literal, or variable
                     var evaluated: []const u8 = undefined;
 
-                    // Check if it's a quoted string, object literal, or array literal
                     if (value.len >= 2 and (value[0] == '"' or value[0] == '\'' or value[0] == '`')) {
-                        // Quoted string - strip quotes
                         evaluated = try self.evaluateString(value);
                     } else if (value.len >= 1 and (value[0] == '{' or value[0] == '[')) {
-                        // Object or array literal - use as-is
                         evaluated = value;
                     } else {
-                        // Unquoted - evaluate as expression (variable lookup)
                         const expr_value = self.evaluateExpression(value);
                         evaluated = try expr_value.toString(self.allocator);
                     }
 
-                    // Special handling for style attribute with object literal
                     if (std.mem.eql(u8, attr.name, "style") and evaluated.len > 0 and evaluated[0] == '{') {
                         evaluated = try parseObjectToCSS(self.allocator, evaluated);
                     }
@@ -518,13 +651,6 @@ pub const Runtime = struct {
                 try self.write(attr.name);
                 try self.write("\"");
             }
-        }
-
-        // Output combined class attribute
-        if (all_classes.items.len > 0) {
-            try self.write(" class=\"");
-            try self.writeEscaped(all_classes.items);
-            try self.write("\"");
         }
 
         // Output spread attributes: &attributes({'data-foo': 'bar'}) or &attributes(attributes)
@@ -553,7 +679,7 @@ pub const Runtime = struct {
         }
 
         if (is_void and self.options.self_closing) {
-            try self.write(" />");
+            try self.write("/>");
             try self.writeNewline();
             return;
         }
@@ -573,20 +699,60 @@ pub const Runtime = struct {
             const value = self.evaluateExpression(code.expression);
             const str = try value.toString(self.allocator);
             if (code.escaped) {
-                try self.writeEscaped(str);
+                try self.writeTextEscaped(str);
             } else {
                 try self.write(str);
             }
         }
 
         if (has_children) {
-            if (!has_inline and !has_buffered) try self.writeNewline();
-            self.depth += 1;
-            for (elem.children) |child| {
-                try self.visitNode(child);
+            // Check if single text child - render inline (like blockquote with one piped line)
+            const single_text = elem.children.len == 1 and elem.children[0] == .text;
+            // Check for whitespace-preserving elements (pre, script, style, textarea)
+            const preserve_ws = isWhitespacePreserving(elem.tag);
+
+            if (single_text) {
+                // Render single text child inline (no newlines/indents)
+                try self.writeTextSegments(elem.children[0].text.segments);
+            } else if (elem.is_inline and canRenderInlineForParent(elem)) {
+                // Block expansion (`:` syntax) - render children inline only in specific cases
+                for (elem.children) |child| {
+                    try self.visitNodeInline(child);
+                }
+            } else if (preserve_ws) {
+                // Whitespace-preserving element - render content without extra formatting
+                for (elem.children) |child| {
+                    switch (child) {
+                        .raw_text => |raw| {
+                            // Check if content has multiple lines - if so, add leading newline
+                            // Single-line content renders inline and stripped: <script>var x = 1;</script>
+                            // Multi-line content has newline: <script>\n  if (x) {\n  }\n</script>
+                            const has_multiple_lines = std.mem.indexOfScalar(u8, raw.content, '\n') != null;
+                            if (has_multiple_lines and !has_inline and !has_buffered) {
+                                try self.write("\n");
+                                try self.writeRawTextPreserved(raw.content);
+                            } else {
+                                // Single line - strip leading whitespace
+                                const stripped = std.mem.trimLeft(u8, raw.content, " \t");
+                                try self.write(stripped);
+                            }
+                        },
+                        .element => |child_elem| {
+                            // Nested element in whitespace-preserving context (e.g., pre > code)
+                            try self.visitElementPreserved(child_elem);
+                        },
+                        else => try self.visitNode(child),
+                    }
+                }
+            } else {
+                if (!has_inline and !has_buffered) try self.writeNewline();
+                self.depth += 1;
+                for (elem.children) |child| {
+                    try self.visitNode(child);
+                }
+                self.depth -= 1;
+                if (!has_inline and !has_buffered) try self.writeIndent();
             }
-            self.depth -= 1;
-            if (!has_inline and !has_buffered) try self.writeIndent();
         }
 
         try self.write("</");
@@ -601,17 +767,111 @@ pub const Runtime = struct {
         try self.writeNewline();
     }
 
+    /// Writes raw text content as-is.
+    fn writeRawTextPreserved(self: *Runtime, content: []const u8) Error!void {
+        try self.write(content);
+    }
+
+    /// Renders an element within a whitespace-preserving context (no indentation/newlines)
+    fn visitElementPreserved(self: *Runtime, elem: ast.Element) Error!void {
+        try self.write("<");
+        try self.write(elem.tag);
+
+        // Output classes
+        if (elem.classes.len > 0) {
+            try self.write(" class=\"");
+            for (elem.classes, 0..) |class, i| {
+                if (i > 0) try self.write(" ");
+                try self.writeEscaped(class);
+            }
+            try self.write("\"");
+        }
+
+        // Output attributes
+        for (elem.attributes) |attr| {
+            if (attr.value) |value| {
+                try self.write(" ");
+                try self.write(attr.name);
+                try self.write("=\"");
+                var evaluated: []const u8 = undefined;
+                if (value.len >= 2 and (value[0] == '"' or value[0] == '\'' or value[0] == '`')) {
+                    evaluated = try self.evaluateString(value);
+                } else {
+                    const expr_value = self.evaluateExpression(value);
+                    evaluated = try expr_value.toString(self.allocator);
+                }
+                if (attr.escaped) {
+                    try self.writeEscaped(evaluated);
+                } else {
+                    try self.write(evaluated);
+                }
+                try self.write("\"");
+            } else {
+                try self.write(" ");
+                try self.write(attr.name);
+                try self.write("=\"");
+                try self.write(attr.name);
+                try self.write("\"");
+            }
+        }
+
+        try self.write(">");
+
+        // Render children without formatting
+        for (elem.children) |child| {
+            switch (child) {
+                .raw_text => |raw| try self.writeRawTextPreserved(raw.content),
+                .text => |text| try self.writeTextSegments(text.segments),
+                else => {},
+            }
+        }
+
+        try self.write("</");
+        try self.write(elem.tag);
+        try self.write(">");
+    }
+
     fn visitComment(self: *Runtime, comment: ast.Comment) Error!void {
         if (!comment.rendered) return;
 
         try self.writeIndent();
         try self.write("<!--");
-        if (comment.content.len > 0) {
-            try self.write(" ");
-            try self.write(comment.content);
-            try self.write(" ");
+
+        // Check if this is a block comment (has children)
+        if (comment.children.len > 0) {
+            // Block comment: render children as raw text inside comment
+            // Content already includes leading space if present (e.g., " foo" from "// foo")
+            if (comment.content.len > 0) {
+                try self.write(comment.content);
+            }
+            try self.writeNewline();
+            // Render children as raw content (they are stored as raw_text nodes)
+            for (comment.children) |child| {
+                switch (child) {
+                    .raw_text => |raw| {
+                        try self.write(raw.content);
+                        try self.writeNewline();
+                    },
+                    .comment => |nested| {
+                        // Nested comment inside block comment - render as text
+                        if (nested.rendered) {
+                            try self.write("// ");
+                            try self.write(nested.content);
+                            try self.writeNewline();
+                        }
+                    },
+                    else => {},
+                }
+            }
+            try self.write("-->");
+        } else {
+            // Inline comment
+            // Content already includes leading space if present (e.g., " foo" from "// foo")
+            if (comment.content.len > 0) {
+                try self.write(comment.content);
+            }
+            try self.write("-->");
         }
-        try self.write("-->");
         try self.writeNewline();
     }
 
@@ -846,7 +1106,14 @@ pub const Runtime = struct {
         }
 
         // Set current mixin's block content and attributes
-        self.mixin_block_content = if (call.block_children.len > 0) call.block_children else null;
+        // If block content is a single mixin_block node, pass through parent's block content
+        // to avoid infinite recursion when nesting mixins with `block` passthrough
+        self.mixin_block_content = blk: {
+            if (call.block_children.len == 1 and call.block_children[0] == .mixin_block) {
+                break :blk prev_block_content;
+            }
+            break :blk if (call.block_children.len > 0) call.block_children else null;
+        };
         self.mixin_attributes = if (call.attributes.len > 0) call.attributes else null;
 
         // Set 'attributes' variable with the passed attributes as an object
@@ -1025,7 +1292,7 @@ pub const Runtime = struct {
 
         try self.writeIndent();
         if (code.escaped) {
-            try self.writeEscaped(str);
+            try self.writeTextEscaped(str);
         } else {
             try self.write(str);
         }
@@ -1035,7 +1302,11 @@ pub const Runtime = struct {
     fn visitRawText(self: *Runtime, raw: ast.RawText) Error!void {
         // Raw text already includes its own indentation, don't add extra
         try self.write(raw.content);
-        try self.writeNewline();
+        // Only add newline if content doesn't already end with one
+        // This prevents double newlines at end of dot blocks
+        if (raw.content.len == 0 or raw.content[raw.content.len - 1] != '\n') {
+            try self.writeNewline();
+        }
     }
 
     /// Visits a block node, handling inheritance (replace/append/prepend).
@@ -1270,9 +1541,9 @@ pub const Runtime = struct {
         return current;
     }
 
-    /// Evaluates a string value, stripping surrounding quotes if present.
+    /// Evaluates a string value, stripping surrounding quotes and processing escape sequences.
     /// Used for HTML attribute values.
-    fn evaluateString(_: *Runtime, str: []const u8) ![]const u8 {
+    fn evaluateString(self: *Runtime, str: []const u8) ![]const u8 {
         // Strip surrounding quotes if present (single, double, or backtick)
         if (str.len >= 2) {
             const first = str[0];
@@ -1281,10 +1552,63 @@ pub const Runtime = struct {
                 (first == '\'' and last == '\'') or
                 (first == '`' and last == '`'))
             {
-                return str[1 .. str.len - 1];
+                const inner = str[1 .. str.len - 1];
+                // Process escape sequences (e.g., \\ -> \, \n -> newline)
+                return try self.processEscapeSequences(inner);
             }
         }
         return str;
+    }
+
+    /// Process JavaScript-style escape sequences in strings
+    fn processEscapeSequences(self: *Runtime, str: []const u8) ![]const u8 {
+        // Quick check - if no backslashes, return as-is
+        if (std.mem.indexOfScalar(u8, str, '\\') == null) {
+            return str;
+        }
+
+        var result = std.ArrayList(u8).empty;
+        var i: usize = 0;
+        while (i < str.len) {
+            if (str[i] == '\\' and i + 1 < str.len) {
+                const next = str[i + 1];
+                switch (next) {
+                    '\\' => {
+                        try result.append(self.allocator, '\\');
+                        i += 2;
+                    },
+                    'n' => {
+                        try result.append(self.allocator, '\n');
+                        i += 2;
+                    },
+                    'r' => {
+                        try result.append(self.allocator, '\r');
+                        i += 2;
+                    },
+                    't' => {
+                        try result.append(self.allocator, '\t');
+                        i += 2;
+                    },
+                    '\'' => {
+                        try result.append(self.allocator, '\'');
+                        i += 2;
+                    },
+                    '"' => {
+                        try result.append(self.allocator, '"');
+                        i += 2;
+                    },
+                    else => {
+                        // Unknown escape - keep the backslash and character
+                        try result.append(self.allocator, str[i]);
+                        i += 1;
+                    },
+                }
+            } else {
+                try result.append(self.allocator, str[i]);
+                i += 1;
+            }
+        }
+        return result.items;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1294,11 +1618,11 @@ pub const Runtime = struct {
     fn writeTextSegments(self: *Runtime, segments: []const ast.TextSegment) Error!void {
         for (segments) |seg| {
             switch (seg) {
-                .literal => |lit| try self.writeEscaped(lit),
+                .literal => |lit| try self.writeTextEscaped(lit),
                 .interp_escaped => |expr| {
                     const value = self.evaluateExpression(expr);
                     const str = try value.toString(self.allocator);
-                    try self.writeEscaped(str);
+                    try self.writeTextEscaped(str);
                 },
                 .interp_unescaped => |expr| {
                     const value = self.evaluateExpression(expr);
@@ -1528,7 +1852,118 @@ pub const Runtime = struct {
         }
     }
 
-    /// Lookup table for characters that need HTML escaping
+    /// Writes text content with HTML escaping (no quote escaping needed in text)
+    /// Preserves existing HTML entities (e.g., &#8217; stays as &#8217;)
+    fn writeTextEscaped(self: *Runtime, str: []const u8) Error!void {
+        var i: usize = 0;
+        var start: usize = 0;
+
+        while (i < str.len) {
+            const c = str[i];
+            if (c == '&') {
+                // Check if this is an existing HTML entity - don't double-escape
+                if (isHtmlEntity(str[i..])) {
+                    i += 1;
+                    continue;
+                }
+                // Not an entity, escape the &
+                if (i > start) {
+                    const chunk = str[start..i];
+                    const dest = try self.output.addManyAsSlice(self.allocator, chunk.len);
+                    @memcpy(dest, chunk);
+                }
+                const esc = "&amp;";
+                const dest = try self.output.addManyAsSlice(self.allocator, esc.len);
+                @memcpy(dest, esc);
+                start = i + 1;
+                i += 1;
+            } else if (c == '<') {
+                if (i > start) {
+                    const chunk = str[start..i];
+                    const dest = try self.output.addManyAsSlice(self.allocator, chunk.len);
+                    @memcpy(dest, chunk);
+                }
+                const esc = "&lt;";
+                const dest = try self.output.addManyAsSlice(self.allocator, esc.len);
+                @memcpy(dest, esc);
+                start = i + 1;
+                i += 1;
+            } else if (c == '>') {
+                if (i > start) {
+                    const chunk = str[start..i];
+                    const dest = try self.output.addManyAsSlice(self.allocator, chunk.len);
+                    @memcpy(dest, chunk);
+                }
+                const esc = "&gt;";
+                const dest = try self.output.addManyAsSlice(self.allocator, esc.len);
+                @memcpy(dest, esc);
+                start = i + 1;
+                i += 1;
+            } else {
+                i += 1;
+            }
+        }
+
+        if (start < str.len) {
+            const chunk = str[start..];
+            const dest = try self.output.addManyAsSlice(self.allocator, chunk.len);
+            @memcpy(dest, chunk);
+        }
+    }
+
+    /// Checks if string starts with an HTML entity (&#nnnn; or &#xhhhh; or &name;)
+    fn isHtmlEntity(str: []const u8) bool {
+        if (str.len < 3 or str[0] != '&') return false;
+
+        var i: usize = 1;
+        if (str[i] == '#') {
+            // Numeric entity: &#nnnn; or &#xhhhh;
+            i += 1;
+            if (i >= str.len) return false;
+
+            if (str[i] == 'x' or str[i] == 'X') {
+                // Hex: &#xhhhh;
+                i += 1;
+                var has_hex = false;
+                while (i < str.len and i < 10) : (i += 1) {
+                    const c = str[i];
+                    if (c == ';') return has_hex;
+                    if ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')) {
+                        has_hex = true;
+                    } else {
+                        return false;
+                    }
+                }
+            } else {
+                // Decimal: &#nnnn;
+                var has_digit = false;
+                while (i < str.len and i < 10) : (i += 1) {
+                    const c = str[i];
+                    if (c == ';') return has_digit;
+                    if (c >= '0' and c <= '9') {
+                        has_digit = true;
+                    } else {
+                        return false;
+                    }
+                }
+            }
+        } else {
+            // Named entity: &name;
+            var has_alpha = false;
+            while (i < str.len and i < 32) : (i += 1) {
+                const c = str[i];
+                if (c == ';') return has_alpha;
+                if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')) {
+                    has_alpha = true;
+                } else {
+                    return false;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Lookup table for characters that need HTML escaping (for attributes - includes quotes)
     const escape_table = blk: {
         var table: [256]bool = [_]bool{false} ** 256;
         table['&'] = true;
@@ -1539,7 +1974,7 @@ pub const Runtime = struct {
         break :blk table;
     };
 
-    /// Escape strings for each character
+    /// Escape strings for each character (for attributes)
     const escape_strings = blk: {
         var strings: [256][]const u8 = [_][]const u8{""} ** 256;
         strings['&'] = "&amp;";
@@ -1547,6 +1982,24 @@ pub const Runtime = struct {
         strings['>'] = "&gt;";
         strings['"'] = "&quot;";
         strings['\''] = "&#x27;";
+        break :blk strings;
+    };
+
+    /// Lookup table for text content (no quotes - only &, <, >)
+    const text_escape_table = blk: {
+        var table: [256]bool = [_]bool{false} ** 256;
+        table['&'] = true;
+        table['<'] = true;
+        table['>'] = true;
+        break :blk table;
+    };
+
+    /// Escape strings for text content
+    const text_escape_strings = blk: {
+        var strings: [256][]const u8 = [_][]const u8{""} ** 256;
+        strings['&'] = "&amp;";
+        strings['<'] = "&lt;";
+        strings['>'] = "&gt;";
         break :blk strings;
     };
 };
@@ -1564,6 +2017,50 @@ fn isVoidElement(tag: []const u8) bool {
         .{ "track", {} }, .{ "wbr", {} },
     });
     return void_elements.has(tag);
+}
+
+/// Whitespace-preserving elements - don't add indentation or extra newlines
+fn isWhitespacePreserving(tag: []const u8) bool {
+    const ws_elements = std.StaticStringMap(void).initComptime(.{
+        .{ "pre", {} },
+        .{ "script", {} },
+        .{ "style", {} },
+        .{ "textarea", {} },
+    });
+    return ws_elements.has(tag);
+}
+
+/// Checks if children can be rendered inline (for block expansion).
+/// For inline rendering, the direct child element must have NO content at all
+/// (no children, no inline_text, no buffered_code) OR be a void element.
+/// e.g., `a: img` can be inline (img is void element)
+///       `li: a(href='#') foo` - the `a` has inline_text so renders inline
+/// but `li: .foo: #bar baz` cannot (div.foo has child #bar)
+/// Checks if a parent element can render its children inline.
+/// For block expansion (`:` syntax), inline rendering is only allowed when:
+/// - Child has no element children AND
+/// - Child was not created via block expansion (not chained) AND
+/// - Child has no text/buffered content if parent is in a chain (child.is_inline check handles this)
+fn canRenderInlineForParent(parent: ast.Element) bool {
+    for (parent.children) |child| {
+        switch (child) {
+            .element => |elem| {
+                // If child has element children, can't render inline
+                if (elem.children.len > 0) return false;
+                // If child was created via block expansion (chained `:` syntax), can't render inline
+                // This handles `li: .foo: #bar` where .foo has is_inline=true
+                if (elem.is_inline) return false;
+                // If child has content AND parent's child will itself be inline-rendered,
+                // we need to check if this is a chain. Since parent.is_inline is true (we're here),
+                // check if any child element has text - if the depth > 1, don't render inline.
+                // This is approximated by: if child has inline_text AND is followed by `:` somewhere in the chain
+                // But we can't easily detect chain depth here.
+                // For now, leave as is - the is_inline check above should handle most cases.
+            },
+            else => {},
+        }
+    }
+    return true;
 }
 
 /// Parses a JS array literal and converts it to space-separated string.
@@ -1713,6 +2210,97 @@ fn parseObjectToCSS(allocator: std.mem.Allocator, input: []const u8) ![]const u8
     return result.toOwnedSlice(allocator);
 }
 
+/// Parses a JS object literal for class attribute and returns space-separated class names.
+/// Only includes keys where the value is truthy (true, non-empty string, non-zero number).
+/// Input: {foo: true, bar: false, baz: true}
+/// Output: foo baz
+fn parseObjectToClassList(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, input, " \t\n\r");
+
+    // Must start with { and end with }
+    if (trimmed.len < 2 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') {
+        return input; // Not an object, return as-is
+    }
+
+    const content = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\n\r");
+    if (content.len == 0) return "";
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    var pos: usize = 0;
+    while (pos < content.len) {
+        // Skip whitespace
+        while (pos < content.len and (content[pos] == ' ' or content[pos] == '\t' or content[pos] == '\n' or content[pos] == '\r')) {
+            pos += 1;
+        }
+        if (pos >= content.len) break;
+
+        // Parse property name (class name)
+        const name_start = pos;
+        while (pos < content.len and content[pos] != ':' and content[pos] != ' ' and content[pos] != ',') {
+            pos += 1;
+        }
+        const name = content[name_start..pos];
+
+        // Skip to colon
+        while (pos < content.len and content[pos] != ':') {
+            pos += 1;
+        }
+        if (pos >= content.len) break;
+        pos += 1; // skip :
+
+        // Skip whitespace
+        while (pos < content.len and (content[pos] == ' ' or content[pos] == '\t')) {
+            pos += 1;
+        }
+
+        // Parse value
+        var value_start = pos;
+        var value_end = pos;
+        if (pos < content.len and (content[pos] == '\'' or content[pos] == '"')) {
+            const quote = content[pos];
+            pos += 1;
+            value_start = pos;
+            while (pos < content.len and content[pos] != quote) {
+                pos += 1;
+            }
+            value_end = pos;
+            if (pos < content.len) pos += 1; // skip closing quote
+        } else {
+            // Unquoted value (true, false, number, variable)
+            while (pos < content.len and content[pos] != ',' and content[pos] != '}' and content[pos] != ' ') {
+                pos += 1;
+            }
+            value_end = pos;
+        }
+        const value = std.mem.trim(u8, content[value_start..value_end], " \t");
+
+        // Check if value is truthy
+        const is_truthy = !std.mem.eql(u8, value, "false") and
+            !std.mem.eql(u8, value, "null") and
+            !std.mem.eql(u8, value, "undefined") and
+            !std.mem.eql(u8, value, "0") and
+            !std.mem.eql(u8, value, "''") and
+            !std.mem.eql(u8, value, "\"\"") and
+            value.len > 0;
+
+        if (is_truthy and name.len > 0) {
+            if (result.items.len > 0) {
+                try result.append(allocator, ' ');
+            }
+            try result.appendSlice(allocator, name);
+        }
+
+        // Skip comma and whitespace
+        while (pos < content.len and (content[pos] == ' ' or content[pos] == ',' or content[pos] == '\t' or content[pos] == '\n' or content[pos] == '\r')) {
+            pos += 1;
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Convenience function
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1750,7 +2338,16 @@ pub fn renderTemplate(allocator: std.mem.Allocator, source: []const u8, data: an
 
 /// Renders a pre-parsed document with the given data context.
 /// Use this when you want to parse once and render multiple times with different data.
+/// Options for render function.
+pub const RenderOptions = struct {
+    pretty: bool = true,
+};
+
 pub fn render(allocator: std.mem.Allocator, doc: ast.Document, data: anytype) ![]u8 {
+    return renderWithOptions(allocator, doc, data, .{});
+}
+
+pub fn renderWithOptions(allocator: std.mem.Allocator, doc: ast.Document, data: anytype, opts: RenderOptions) ![]u8 {
     var ctx = Context.init(allocator);
     defer ctx.deinit();
 
@@ -1761,7 +2358,7 @@ pub fn render(allocator: std.mem.Allocator, doc: ast.Document, data: anytype) ![
         try ctx.set(field.name, toValue(allocator, value));
     }
 
-    var runtime = Runtime.init(allocator, &ctx, .{});
+    var runtime = Runtime.init(allocator, &ctx, .{ .pretty = opts.pretty });
     defer runtime.deinit();
 
     return runtime.renderOwned(doc);

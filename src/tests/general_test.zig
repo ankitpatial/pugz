@@ -7,10 +7,11 @@ const expectOutput = helper.expectOutput;
 // Test Case 1: Simple interpolation
 // ─────────────────────────────────────────────────────────────────────────────
 test "Simple interpolation" {
+    // Quotes don't need escaping in text content (only in attribute values)
     try expectOutput(
         "p #{name}'s Pug source code!",
         .{ .name = "ankit patial" },
-        "<p>ankit patial&#x27;s Pug source code!</p>",
+        "<p>ankit patial's Pug source code!</p>",
     );
 }
 
@@ -50,7 +51,7 @@ test "Link with class and href (space separated)" {
     try expectOutput(
         "a(class='button' href='//google.com') Google",
         .{},
-        "<a href=\"//google.com\" class=\"button\">Google</a>",
+        "<a class=\"button\" href=\"//google.com\">Google</a>",
     );
 }
 
@@ -58,7 +59,7 @@ test "Link with class and href (comma separated)" {
     try expectOutput(
         "a(class='button', href='//google.com') Google",
         .{},
-        "<a href=\"//google.com\" class=\"button\">Google</a>",
+        "<a class=\"button\" href=\"//google.com\">Google</a>",
     );
 }
 
@@ -74,7 +75,7 @@ test "Checkbox with boolean checked attribute" {
         \\)
     ,
         .{},
-        "<input type=\"checkbox\" name=\"agreement\" checked=\"checked\" />",
+        "<input type=\"checkbox\" name=\"agreement\" checked=\"checked\"/>",
     );
 }
 
@@ -96,7 +97,7 @@ test "Input with multiline JSON data attribute" {
         \\    &quot;very-long&quot;: &quot;piece of &quot;,
         \\    &quot;data&quot;: true
         \\  }
-        \\" />
+        \\"/>
         ,
     );
 }
@@ -127,7 +128,7 @@ test "Checkbox with checked (no value)" {
     try expectOutput(
         "input(type='checkbox' checked)",
         .{},
-        "<input type=\"checkbox\" checked=\"checked\" />",
+        "<input type=\"checkbox\" checked=\"checked\"/>",
     );
 }
 
@@ -135,7 +136,7 @@ test "Checkbox with checked=true" {
     try expectOutput(
         "input(type='checkbox' checked=true)",
         .{},
-        "<input type=\"checkbox\" checked=\"checked\" />",
+        "<input type=\"checkbox\" checked=\"checked\"/>",
     );
 }
 
@@ -143,7 +144,7 @@ test "Checkbox with checked=false (omitted)" {
     try expectOutput(
         "input(type='checkbox' checked=false)",
         .{},
-        "<input type=\"checkbox\" />",
+        "<input type=\"checkbox\"/>",
     );
 }
 
@@ -609,6 +610,7 @@ test "Piped text basic" {
 // }
 
 test "Block text with dot" {
+    // Multi-line content in whitespace-preserving elements gets leading newline and preserved indentation
     try expectOutput(
         \\script.
         \\  if (usingPug)
@@ -617,12 +619,12 @@ test "Block text with dot" {
         \\<script>
         \\  if (usingPug)
         \\    console.log('you are awesome')
-        \\
         \\</script>
     );
 }
 
 test "Block text with dot and attributes" {
+    // Multi-line content in whitespace-preserving elements gets leading newline and preserved indentation
     try expectOutput(
         \\style(type='text/css').
         \\  body {
@@ -633,7 +635,6 @@ test "Block text with dot and attributes" {
         \\  body {
         \\    color: red;
         \\  }
-        \\
         \\</style>
     );
 }
@@ -688,35 +689,31 @@ test "Self-closing void elements" {
         \\br
         \\input
     , .{},
-        \\<img />
-        \\<br />
-        \\<input />
+        \\<img/>
+        \\<br/>
+        \\<input/>
     );
 }
 
 test "Block expansion with colon" {
+    // Block expansion renders children inline (on same line)
     try expectOutput(
         \\a: img
     , .{},
-        \\<a>
-        \\  <img />
-        \\</a>
+        \\<a><img/></a>
     );
 }
 
 test "Block expansion nested" {
+    // Block expansion renders children inline (on same line)
     try expectOutput(
         \\ul
         \\  li: a(href='/') Home
         \\  li: a(href='/about') About
     , .{},
         \\<ul>
-        \\  <li>
-        \\    <a href="/">Home</a>
-        \\  </li>
-        \\  <li>
-        \\    <a href="/about">About</a>
-        \\  </li>
+        \\  <li><a href="/">Home</a></li>
+        \\  <li><a href="/about">About</a></li>
         \\</ul>
     );
 }
@@ -725,7 +722,7 @@ test "Explicit self-closing tag" {
     try expectOutput(
         \\foo/
     , .{},
-        \\<foo />
+        \\<foo/>
     );
 }
 
@@ -733,7 +730,7 @@ test "Explicit self-closing tag with attributes" {
     try expectOutput(
         \\foo(bar='baz')/
     , .{},
-        \\<foo bar="baz" />
+        \\<foo bar="baz"/>
     );
 }
 

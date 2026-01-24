@@ -110,14 +110,14 @@ pub const Element = struct {
     inline_text: ?[]TextSegment,
     /// Buffered code content (e.g., `p= expr` or `p!= expr`).
     buffered_code: ?Code = null,
+    /// Whether children should be rendered inline (block expansion with `:`).
+    is_inline: bool = false,
 };
 
 /// Text content node.
 pub const Text = struct {
     /// Segments of text (literals and interpolations).
     segments: []TextSegment,
-    /// Whether this is from pipe syntax `|`.
-    is_piped: bool,
 };
 
 /// Code output node: `= expr` or `!= expr`.
@@ -255,59 +255,3 @@ pub const RawText = struct {
     /// Raw text content lines.
     content: []const u8,
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AST Builder Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Creates an empty document node.
-pub fn emptyDocument() Document {
-    return .{
-        .nodes = &.{},
-        .extends_path = null,
-    };
-}
-
-/// Creates a simple element with just a tag name.
-pub fn simpleElement(tag: []const u8) Element {
-    return .{
-        .tag = tag,
-        .classes = &.{},
-        .id = null,
-        .attributes = &.{},
-        .children = &.{},
-        .self_closing = false,
-        .inline_text = null,
-    };
-}
-
-/// Creates a text node from a single literal string.
-/// Note: The returned Text has a pointer to static memory for segments.
-/// For dynamic text, allocate segments separately.
-pub fn literalText(allocator: std.mem.Allocator, content: []const u8) !Text {
-    const segments = try allocator.alloc(TextSegment, 1);
-    segments[0] = .{ .literal = content };
-    return .{
-        .segments = segments,
-        .is_piped = false,
-    };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────────
-
-test "create simple element" {
-    const elem = simpleElement("div");
-    try std.testing.expectEqualStrings("div", elem.tag);
-    try std.testing.expectEqual(@as(usize, 0), elem.children.len);
-}
-
-test "create literal text" {
-    const allocator = std.testing.allocator;
-    const text = try literalText(allocator, "Hello, world!");
-    defer allocator.free(text.segments);
-
-    try std.testing.expectEqual(@as(usize, 1), text.segments.len);
-    try std.testing.expectEqualStrings("Hello, world!", text.segments[0].literal);
-}

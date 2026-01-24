@@ -88,6 +88,9 @@ pub const TokenType = enum {
     comment, // Rendered comment: //
     comment_unbuffered, // Silent comment: //-
 
+    // Unbuffered code (JS code that doesn't produce output)
+    unbuffered_code, // Code line: - var x = 1
+
     // Miscellaneous
     colon, // Block expansion: :
     ampersand_attrs, // Attribute spread: &attributes
@@ -151,6 +154,10 @@ pub const Lexer = struct {
     in_raw_block: bool,
     raw_block_indent: usize,
     raw_block_started: bool,
+    in_comment_block: bool,
+    comment_block_indent: usize,
+    comment_block_started: bool,
+    comment_base_indent: usize,
     /// Last error diagnostic (populated on error)
     last_diagnostic: ?Diagnostic,
 
@@ -170,6 +177,10 @@ pub const Lexer = struct {
             .in_raw_block = false,
             .raw_block_indent = 0,
             .raw_block_started = false,
+            .in_comment_block = false,
+            .comment_block_indent = 0,
+            .comment_block_started = false,
+            .comment_base_indent = 0,
             .last_diagnostic = null,
         };
     }
@@ -204,6 +215,16 @@ pub const Lexer = struct {
     /// until deinit() is called. On error, calls reset() via errdefer to
     /// restore the lexer to a clean state for potential retry or inspection.
     pub fn tokenize(self: *Lexer) ![]Token {
+        // Skip UTF-8 BOM if present (EF BB BF)
+        if (self.source.len >= 3 and
+            self.source[0] == 0xEF and
+            self.source[1] == 0xBB and
+            self.source[2] == 0xBF)
+        {
+            self.pos = 3;
+            self.column = 4;
+        }
+
         // Pre-allocate with estimated capacity: ~1 token per 10 chars is a reasonable heuristic
         const estimated_tokens = @max(16, self.source.len / 10);
         try self.tokens.ensureTotalCapacity(self.allocator, estimated_tokens);
@@ -253,6 +274,51 @@ pub const Lexer = struct {
     /// Handles indentation at line start, then dispatches to specific scanners.
     fn scanToken(self: *Lexer) !void {
         if (self.at_line_start) {
+            // In comment block mode, handle indentation specially (similar to raw block)
+            if (self.in_comment_block) {
+                const indent = self.measureIndent();
+                self.current_indent = indent;
+
+                if (indent > self.comment_block_indent) {
+                    // First line in comment block - emit indent token and record base indent
+                    if (!self.comment_block_started) {
+                        self.comment_block_started = true;
+                        self.comment_base_indent = indent; // Record the base indent for stripping
+                        try self.indent_stack.append(self.allocator, indent);
+                        try self.addToken(.indent, "");
+                    }
+                    // Scan line as raw text, stripping base indent but preserving relative indent
+                    try self.scanCommentRawLine(indent);
+                    self.at_line_start = false;
+                    return;
+                } else {
+                    // Exiting comment block - only emit dedent if we actually started a block
+                    const was_started = self.comment_block_started;
+                    self.in_comment_block = false;
+                    self.comment_block_started = false;
+                    if (was_started and self.indent_stack.items.len > 1) {
+                        _ = self.indent_stack.pop();
+                        try self.addToken(.dedent, "");
+                    }
+                    // Process indentation manually since we already consumed whitespace
+                    // (measureIndent was already called above and self.current_indent is set)
+                    const current_stack_indent = self.indent_stack.items[self.indent_stack.items.len - 1];
+                    if (indent > current_stack_indent) {
+                        try self.indent_stack.append(self.allocator, indent);
+                        try self.addToken(.indent, "");
+                    } else if (indent < current_stack_indent) {
+                        while (self.indent_stack.items.len > 1 and
+                            self.indent_stack.items[self.indent_stack.items.len - 1] > indent)
+                        {
+                            _ = self.indent_stack.pop();
+                            try self.addToken(.dedent, "");
+                        }
+                    }
+                    self.at_line_start = false;
+                    return;
+                }
+            }
+
             // In raw block mode, handle indentation specially
             if (self.in_raw_block) {
                 // Remember position before consuming indent
@@ -425,6 +491,18 @@ pub const Lexer = struct {
             return;
         }
 
+        // Unbuffered code: - var x = 1 or -var x = 1 (JS code that doesn't produce output)
+        // Skip the entire line since we don't execute JS
+        // Handle both "- var" (with space) and "-var" (no space) formats
+        if (c == '-') {
+            const next = self.peekNext();
+            // Check if this is unbuffered code: - followed by space, letter, or control keywords
+            if (next == ' ' or isAlpha(next)) {
+                try self.scanUnbufferedCode();
+                return;
+            }
+        }
+
         // Block expansion: tag: nested
         if (c == ':') {
             self.advance();
@@ -488,12 +566,6 @@ pub const Lexer = struct {
             return;
         }
 
-        // Comment-only lines preserve current indent context
-        if (!self.isAtEnd() and self.peek() == '/' and self.peekNext() == '/') {
-            self.current_indent = indent;
-            return;
-        }
-
         self.current_indent = indent;
         const current_stack_indent = self.indent_stack.items[self.indent_stack.items.len - 1];
 
@@ -519,6 +591,7 @@ pub const Lexer = struct {
 
     /// Scans a comment (// or //-) until end of line.
     /// Unbuffered comments (//-) are not rendered in output.
+    /// Sets up comment block mode for any indented content that follows.
     fn scanComment(self: *Lexer) !void {
         self.advance(); // skip first /
         self.advance(); // skip second /
@@ -535,6 +608,29 @@ pub const Lexer = struct {
 
         const value = self.source[start..self.pos];
         try self.addToken(if (is_unbuffered) .comment_unbuffered else .comment, value);
+
+        // Set up comment block mode - any indented content will be captured as raw text
+        self.in_comment_block = true;
+        self.comment_block_indent = self.current_indent;
+    }
+
+    /// Scans unbuffered code: - var x = 1; or -var x = 1 or -if (condition) { ... }
+    /// These are JS statements that don't produce output, so we emit a token
+    /// but the runtime will ignore it.
+    fn scanUnbufferedCode(self: *Lexer) !void {
+        self.advance(); // skip -
+        // Skip optional space after -
+        if (self.peek() == ' ') {
+            self.advance();
+        }
+
+        const start = self.pos;
+        while (!self.isAtEnd() and self.peek() != '\n' and self.peek() != '\r') {
+            self.advance();
+        }
+
+        const value = self.source[start..self.pos];
+        try self.addToken(.unbuffered_code, value);
     }
 
     /// Scans a class selector: .classname
@@ -1022,18 +1118,76 @@ pub const Lexer = struct {
         }
     }
 
+    /// Scans a raw line for comment blocks, stripping base indentation.
+    /// Preserves relative indentation beyond the base comment indent.
+    fn scanCommentRawLine(self: *Lexer, current_indent: usize) !void {
+        var result = std.ArrayList(u8).empty;
+        errdefer result.deinit(self.allocator);
+
+        // Add relative indentation (indent beyond the base)
+        if (current_indent > self.comment_base_indent) {
+            const relative_indent = current_indent - self.comment_base_indent;
+            for (0..relative_indent) |_| {
+                try result.append(self.allocator, ' ');
+            }
+        }
+
+        // Scan the rest of the line content
+        while (!self.isAtEnd() and self.peek() != '\n' and self.peek() != '\r') {
+            try result.append(self.allocator, self.peek());
+            self.advance();
+        }
+
+        if (result.items.len > 0) {
+            try self.addToken(.text, try result.toOwnedSlice(self.allocator));
+        }
+    }
+
     /// Scans inline text until end of line, handling interpolation markers.
     /// Uses iterative approach instead of recursion to avoid stack overflow.
     fn scanInlineText(self: *Lexer) !void {
         if (self.peek() == ' ') self.advance(); // skip leading space
 
-        while (!self.isAtEnd() and self.peek() != '\n' and self.peek() != '\r') {
+        outer: while (!self.isAtEnd() and self.peek() != '\n' and self.peek() != '\r') {
             const start = self.pos;
 
             // Scan until interpolation or end of line
             while (!self.isAtEnd() and self.peek() != '\n' and self.peek() != '\r') {
                 const c = self.peek();
                 const next = self.peekNext();
+
+                // Handle escaped interpolation: \#{ or \!{ or \#[
+                // The backslash escapes the interpolation, treating #{ as literal text
+                if (c == '\\' and (next == '#' or next == '!')) {
+                    const after_next = self.peekAt(2);
+                    if (after_next == '{' or (next == '#' and after_next == '[')) {
+                        // Emit text before backslash (if any)
+                        if (self.pos > start) {
+                            try self.addToken(.text, self.source[start..self.pos]);
+                        }
+                        self.advance(); // skip backslash
+                        // Now emit the escaped sequence as literal text
+                        // For \#{ we want to output "#{" literally
+                        const esc_start = self.pos;
+                        self.advance(); // include # or !
+                        self.advance(); // include { or [
+                        // For \#{text} we want #{text} as literal, so include until }
+                        if (after_next == '{') {
+                            while (!self.isAtEnd() and self.peek() != '\n' and self.peek() != '\r' and self.peek() != '}') {
+                                self.advance();
+                            }
+                            if (self.peek() == '}') self.advance(); // include }
+                        } else if (after_next == '[') {
+                            while (!self.isAtEnd() and self.peek() != '\n' and self.peek() != '\r' and self.peek() != ']') {
+                                self.advance();
+                            }
+                            if (self.peek() == ']') self.advance(); // include ]
+                        }
+                        try self.addToken(.text, self.source[esc_start..self.pos]);
+                        // Continue outer loop to process rest of line
+                        continue :outer;
+                    }
+                }
 
                 // Check for interpolation start: #{, !{, or #[
                 if ((c == '#' or c == '!') and next == '{') {
@@ -1336,7 +1490,12 @@ pub const Lexer = struct {
 
         while (!self.isAtEnd()) {
             const c = self.peek();
+            // Include colon for namespaced tags like fb:user:role
+            // But only if followed by alphanumeric (not for block expansion like tag: child)
             if (isAlphaNumeric(c) or c == '-' or c == '_') {
+                self.advance();
+            } else if (c == ':' and isAlpha(self.peekNext())) {
+                // Colon followed by letter is part of namespace, not block expansion
                 self.advance();
             } else {
                 break;
@@ -1367,10 +1526,13 @@ pub const Lexer = struct {
                 // Tags may have inline text: p Hello world
                 if (self.peek() == ' ') {
                     const next = self.peekAt(1);
+                    const next2 = self.peekAt(2);
                     // Don't consume text if followed by selector/attr syntax
-                    // Note: # followed by { is interpolation, not ID selector
-                    const is_id_selector = next == '#' and self.peekAt(2) != '{';
-                    if (next != '.' and !is_id_selector and next != '(' and next != '=' and next != ':') {
+                    // Note: # followed by { or [ is interpolation, not ID selector
+                    // Note: . followed by alphanumeric is class selector, but lone . is text
+                    const is_id_selector = next == '#' and next2 != '{' and next2 != '[';
+                    const is_class_selector = next == '.' and (isAlpha(next2) or next2 == '-' or next2 == '_');
+                    if (!is_class_selector and !is_id_selector and next != '(' and next != '=' and next != ':') {
                         self.advance();
                         try self.scanInlineText();
                     }

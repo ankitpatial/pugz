@@ -1,3 +1,7 @@
+*Yet not ready to use in production, i tried to get it done using Cluade but its not quite there where i want it*
+
+*So i will try it by my self keeping PugJS version as a reference*
+
 # Pugz
 
 A Pug template engine for Zig, supporting both build-time compilation and runtime interpretation.

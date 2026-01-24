@@ -220,8 +220,8 @@ test "Extends with block prepend" {
     try std.testing.expectEqualStrings(
         \\<html>
         \\  <head>
-        \\    <link rel="stylesheet" href="/reset.css" />
-        \\    <link rel="stylesheet" href="/main.css" />
+        \\    <link rel="stylesheet" href="/reset.css"/>
+        \\    <link rel="stylesheet" href="/main.css"/>
         \\  </head>
         \\</html>
     , trimmed);
