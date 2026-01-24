@@ -16,6 +16,10 @@ fn normalizeHtml(allocator: std.mem.Allocator, html: []const u8) ![]const u8 {
         const c = html[i];
 
         if (c == '<') {
+            // Strip trailing whitespace before tags
+            while (result.items.len > 0 and (result.items[result.items.len - 1] == ' ' or result.items[result.items.len - 1] == '\t')) {
+                _ = result.pop();
+            }
             in_tag = true;
             last_was_space = false;
             try result.append(allocator, c);
@@ -23,11 +27,8 @@ fn normalizeHtml(allocator: std.mem.Allocator, html: []const u8) ![]const u8 {
             in_tag = false;
             last_was_space = false;
             try result.append(allocator, c);
-        } else if (c == '\n' or c == '\r') {
-            // Skip newlines
-            i += 1;
-            continue;
-        } else if (c == ' ' or c == '\t') {
+        } else if (c == '\n' or c == '\r' or c == ' ' or c == '\t') {
+            // Treat all whitespace (including newlines) uniformly
             if (in_tag) {
                 // Preserve single space in tags for attribute separation
                 if (!last_was_space) {

@@ -2299,7 +2299,13 @@ pub const Lexer = struct {
                 // consume line along with `\n` prefix
                 string_ptr = line_end;
                 // Extract text after the indent
-                const text_content = if (str.len > indents) str[indents..] else "";
+                // For whitespace-only lines, preserve the whitespace as-is (don't subtract indent)
+                const text_content = if (trimmed.len == 0)
+                    str // Preserve whitespace-only lines exactly
+                else if (str.len > indents)
+                    str[indents..]
+                else
+                    "";
                 tokens_list.append(self.allocator, text_content) catch return false;
             } else if (line_indent > self.indent_stack.items[0]) {
                 // line is indented less than the first line but is still indented
@@ -2328,7 +2334,16 @@ pub const Lexer = struct {
             if (ii < token_indent_list.items.len and token_indent_list.items[ii]) {
                 self.incrementColumn(indents);
             }
-            self.addText(.text, token_text, "", 0);
+            // For pipeless text, emit empty text tokens to preserve blank lines
+            // (addText skips empty content, but blank lines need to be preserved)
+            if (token_text.len == 0) {
+                var empty_token = self.tok(.text, .none);
+                empty_token.val = .{ .string = "" };
+                self.tokens.append(self.allocator, empty_token) catch return false;
+                self.tokEnd(&empty_token);
+            } else {
+                self.addText(.text, token_text, "", 0);
+            }
         }
 
         var end_token = self.tok(.end_pipeless_text, .none);
