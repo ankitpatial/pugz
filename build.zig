@@ -141,7 +141,7 @@ pub fn build(b: *std.Build) void {
     const test_includes_exe = b.addExecutable(.{
         .name = "test-includes",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/test_includes.zig"),
+            .root_source_file = b.path("src/tests/test_includes.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{

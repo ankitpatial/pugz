@@ -301,6 +301,18 @@ fn about(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
     res.body = html;
 }
 
+fn includeDemo(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
+    const html = app.view.render(res.arena, "pages/include-demo", .{
+        .title = "Include Demo",
+        .cartCount = "2",
+    }) catch |err| {
+        return renderError(res, err);
+    };
+
+    res.content_type = .HTML;
+    res.body = html;
+}
+
 fn notFound(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
     res.status = 404;
 
@@ -389,6 +401,7 @@ pub fn main() !void {
     router.get("/products/:id", productDetail, .{});
     router.get("/cart", cart, .{});
     router.get("/about", about, .{});
+    router.get("/include-demo", includeDemo, .{});
 
     // Static files
     router.get("/css/*", serveStatic, .{});
@@ -410,6 +423,7 @@ pub fn main() !void {
         \\   GET /products/:id  - Product detail
         \\   GET /cart          - Shopping cart
         \\   GET /about         - About page
+        \\   GET /include-demo  - Include directive demo
         \\
         \\ Press Ctrl+C to stop.
         \\

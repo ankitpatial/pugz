@@ -5,7 +5,7 @@
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .pugz = .{
-            .path = "../..",
+            .path = "../../..",
         },
         .httpz = .{
             .url = "git+https://github.com/karlseguin/http.zig?ref=master#9ef2ffe8d611ff2e1081e5cf39cb4632c145c5b9",
