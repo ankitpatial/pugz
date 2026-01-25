@@ -1,6 +1,6 @@
 # Pugz
 
-A Pug template engine for Zig, supporting both build-time compilation and runtime interpretation.
+A Pug template engine written in Zig. Templates are parsed once and cached, then rendered with data at runtime.
 
 ## Features
 
@@ -23,73 +23,24 @@ Add pugz as a dependency in your `build.zig.zon`:
 zig fetch --save "git+https://github.com/ankitpatial/pugz#main"
 ```
 
+Then in your `build.zig`:
+
+```zig
+const pugz_dep = b.dependency("pugz", .{
+    .target = target,
+    .optimize = optimize,
+});
+
+exe.root_module.addImport("pugz", pugz_dep.module("pugz"));
+```
+
 ---
 
 ## Usage
 
-### Compiled Mode (Build-Time)
+### ViewEngine (Recommended)
 
-Templates are converted to native Zig code at build time. No parsing happens at runtime.
-
-**build.zig:**
-
-```zig
-const std = @import("std");
-
-pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
-
-    const pugz_dep = b.dependency("pugz", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const build_templates = @import("pugz").build_templates;
-    const compiled_templates = build_templates.compileTemplates(b, .{
-        .source_dir = "views",
-    });
-
-    const exe = b.addExecutable(.{
-        .name = "myapp",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "pugz", .module = pugz_dep.module("pugz") },
-                .{ .name = "tpls", .module = compiled_templates },
-            },
-        }),
-    });
-
-    b.installArtifact(exe);
-}
-```
-
-**Usage:**
-
-```zig
-const std = @import("std");
-const tpls = @import("tpls");
-
-pub fn handleRequest(allocator: std.mem.Allocator) ![]u8 {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    return try tpls.home(arena.allocator(), .{
-        .title = "Welcome",
-        .user = .{ .name = "Alice" },
-        .items = &[_][]const u8{ "One", "Two", "Three" },
-    });
-}
-```
-
----
-
-### Interpreted Mode (Runtime)
-
-Templates are parsed and evaluated at runtime. Useful for development or dynamic templates.
+The `ViewEngine` provides template caching and file-based template management for web servers.
 
 ```zig
 const std = @import("std");
@@ -100,15 +51,17 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Initialize once at server startup
     var engine = try pugz.ViewEngine.init(allocator, .{
         .views_dir = "views",
     });
     defer engine.deinit();
 
+    // Per-request rendering with arena allocator
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const html = try engine.render(arena.allocator(), "index", .{
+    const html = try engine.render(arena.allocator(), "pages/index", .{
         .title = "Hello",
         .name = "World",
     });
@@ -117,7 +70,9 @@ pub fn main() !void {
 }
 ```
 
-**Inline template strings:**
+### Inline Templates
+
+For simple use cases or testing, render template strings directly:
 
 ```zig
 const html = try pugz.renderTemplate(allocator,
@@ -131,9 +86,36 @@ const html = try pugz.renderTemplate(allocator,
 });
 ```
 
+### With http.zig
+
+```zig
+const pugz = @import("pugz");
+const httpz = @import("httpz");
+
+var engine: pugz.ViewEngine = undefined;
+
+pub fn main() !void {
+    engine = try pugz.ViewEngine.init(allocator, .{
+        .views_dir = "views",
+    });
+    defer engine.deinit();
+
+    var server = try httpz.Server(*Handler).init(allocator, .{}, handler);
+    try server.listen();
+}
+
+fn handler(_: *Handler, _: *httpz.Request, res: *httpz.Response) !void {
+    res.content_type = .HTML;
+    res.body = try engine.render(res.arena, "pages/home", .{
+        .title = "Hello",
+        .user = .{ .name = "Alice" },
+    });
+}
+```
+
 ---
 
-### ViewEngine Options
+## ViewEngine Options
 
 ```zig
 var engine = try pugz.ViewEngine.init(allocator, .{
@@ -146,8 +128,6 @@ var engine = try pugz.ViewEngine.init(allocator, .{
 });
 ```
 
-**Options:**
-
 | Option | Default | Description |
 |--------|---------|-------------|
 | `views_dir` | `"views"` | Root directory containing templates |
@@ -159,25 +139,9 @@ var engine = try pugz.ViewEngine.init(allocator, .{
 
 ---
 
-### With http.zig
-
-```zig
-fn handler(_: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    // Compiled mode
-    const html = try tpls.home(res.arena, .{
-        .title = "Hello",
-    });
-
-    res.content_type = .HTML;
-    res.body = html;
-}
-```
-
----
-
 ## Memory Management
 
-Always use an `ArenaAllocator` for rendering. Template rendering creates many small allocations that should be freed together.
+Always use an `ArenaAllocator` for rendering. Template rendering creates many small allocations that should be freed together after the response is sent.
 
 ```zig
 var arena = std.heap.ArenaAllocator.init(allocator);
@@ -190,8 +154,8 @@ const html = try engine.render(arena.allocator(), "index", data);
 
 ## Documentation
 
-- [Template Syntax](docs/syntax.md) - Complete syntax reference
-- [API Reference](docs/api.md) - Detailed API documentation
+- [Template Syntax](src/docs/syntax.md) - Complete syntax reference
+- [API Reference](src/docs/api.md) - Detailed API documentation
 
 ---
 
@@ -199,31 +163,35 @@ const html = try engine.render(arena.allocator(), "index", data);
 
 Same templates and data (`src/benchmarks/templates/`), MacBook Air M2, 2000 iterations, best of 5 runs.
 
-| Template | Pug.js | Pugz Compiled | Diff | Pugz Interpreted | Diff |
-|----------|--------|---------------|------|------------------|------|
-| simple-0 | 0.4ms | 0.1ms | +4x | 0.4ms | 1x |
-| simple-1 | 1.3ms | 0.6ms | +2.2x | 5.8ms | -4.5x |
-| simple-2 | 1.6ms | 0.5ms | +3.2x | 4.6ms | -2.9x |
-| if-expression | 0.5ms | 0.2ms | +2.5x | 4.1ms | -8.2x |
-| projects-escaped | 4.2ms | 0.6ms | +7x | 5.8ms | -1.4x |
-| search-results | 14.7ms | 5.3ms | +2.8x | 50.7ms | -3.4x |
-| friends | 145.5ms | 50.4ms | +2.9x | 450.8ms | -3.1x |
+Both Pug.js and Pugz parse templates once, then measure render-only time.
 
-- Pug.js and Pugz Compiled: render-only (pre-compiled)
-- Pugz Interpreted: parse + render on each iteration
-- Diff: +Nx = N times faster, -Nx = N times slower
+| Template | Pug.js | Pugz | Speedup |
+|----------|--------|------|---------|
+| simple-0 | 0.8ms | 0.2ms | 4x |
+| simple-1 | 1.5ms | 0.9ms | 1.7x |
+| simple-2 | 1.7ms | 2.4ms | 0.7x |
+| if-expression | 0.6ms | 0.4ms | 1.5x |
+| projects-escaped | 4.6ms | 2.4ms | 1.9x |
+| search-results | 15.3ms | 17.7ms | 0.9x |
+| friends | 156.7ms | 132.2ms | 1.2x |
+| **TOTAL** | **181.3ms** | **156.2ms** | **1.16x** |
+
+Run benchmarks:
+```bash
+# Pugz
+zig build bench
+
+# Pug.js (for comparison)
+cd src/benchmarks/pugjs && npm install && npm run bench
+```
 
 ---
 
 ## Development
 
 ```bash
-zig build test                # Run all tests
-zig build bench-compiled      # Benchmark compiled mode
-zig build bench-interpreted   # Benchmark interpreted mode
-
-# Pug.js benchmark (for comparison)
-cd src/benchmarks/pugjs && npm install && npm run bench
+zig build test    # Run all tests
+zig build bench   # Run benchmarks
 ```
 
 ---
