@@ -52,11 +52,9 @@ Source → Lexer → Tokens → StripComments → Parser → AST → Linker → 
 
 ### Test Files
 
-- **src/tests/general_test.zig** - Comprehensive integration tests
-- **src/tests/doctype_test.zig** - Doctype-specific tests
-- **src/tests/check_list_test.zig** - Template output validation tests
-- **src/lexer_test.zig** - Lexer unit tests
-- **src/parser_test.zig** - Parser unit tests
+- **tests/general_test.zig** - Comprehensive integration tests
+- **tests/doctype_test.zig** - Doctype-specific tests
+- **tests/check_list_test.zig** - Template output validation tests
 
 ## API Usage
 
@@ -336,27 +334,26 @@ Uses error unions with detailed `PugError` context including line, column, and s
 ## File Structure
 
 ```
-src/
-├── root.zig            # Public library API
-├── view_engine.zig     # High-level ViewEngine
-├── pug.zig             # Main entry point (static compilation)
-├── template.zig        # Data binding renderer
-├── lexer.zig           # Tokenizer
-├── lexer_test.zig      # Lexer tests
-├── parser.zig          # AST parser
-├── parser_test.zig     # Parser tests
-├── runtime.zig         # Shared utilities
-├── error.zig           # Error formatting
-├── walk.zig            # AST traversal
-├── strip_comments.zig  # Comment filtering
-├── load.zig            # File loading
-├── linker.zig          # Template inheritance
-├── codegen.zig         # HTML generation
+├── src/                # Source code
+│   ├── root.zig            # Public library API
+│   ├── view_engine.zig     # High-level ViewEngine
+│   ├── pug.zig             # Main entry point (static compilation)
+│   ├── template.zig        # Data binding renderer
+│   ├── lexer.zig           # Tokenizer
+│   ├── parser.zig          # AST parser
+│   ├── runtime.zig         # Shared utilities
+│   ├── error.zig           # Error formatting
+│   ├── walk.zig            # AST traversal
+│   ├── strip_comments.zig  # Comment filtering
+│   ├── load.zig            # File loading
+│   ├── linker.zig          # Template inheritance
+│   └── codegen.zig         # HTML generation
 ├── tests/              # Integration tests
 │   ├── general_test.zig
 │   ├── doctype_test.zig
 │   └── check_list_test.zig
-└── benchmarks/         # Performance benchmarks
-    ├── bench_v1.zig
-    └── bench_interpreted.zig
+├── benchmarks/         # Performance benchmarks
+├── docs/               # Documentation
+├── examples/           # Example templates
+└── playground/         # Development playground
 ```

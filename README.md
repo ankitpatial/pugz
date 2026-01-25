@@ -154,14 +154,14 @@ const html = try engine.render(arena.allocator(), "index", data);
 
 ## Documentation
 
-- [Template Syntax](src/docs/syntax.md) - Complete syntax reference
-- [API Reference](src/docs/api.md) - Detailed API documentation
+- [Template Syntax](docs/syntax.md) - Complete syntax reference
+- [API Reference](docs/api.md) - Detailed API documentation
 
 ---
 
 ## Benchmarks
 
-Same templates and data (`src/benchmarks/templates/`), MacBook Air M2, 2000 iterations, best of 5 runs.
+Same templates and data (`benchmarks/templates/`), MacBook Air M2, 2000 iterations, best of 5 runs.
 
 Both Pug.js and Pugz parse templates once, then measure render-only time.
 
@@ -182,7 +182,7 @@ Run benchmarks:
 zig build bench
 
 # Pug.js (for comparison)
-cd src/benchmarks/pugjs && npm install && npm run bench
+cd benchmarks/pugjs && npm install && npm run bench
 ```
 
 ---

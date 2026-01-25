@@ -2525,9 +2525,8 @@ pub const Lexer = struct {
     pub fn getTokens(self: *Lexer) ![]Token {
         while (!self.ended) {
             const advanced = self.advance();
-            // Check for errors after every advance, regardless of return value
-            if (self.last_error) |err| {
-                std.debug.print("Lexer error at {d}:{d}: {s}\n", .{ err.line, err.column, err.message });
+            // Check for errors after every advance
+            if (self.last_error != null) {
                 return error.LexerError;
             }
             if (!advanced) {

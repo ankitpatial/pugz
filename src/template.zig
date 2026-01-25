@@ -13,6 +13,8 @@ const runtime = @import("runtime.zig");
 const mixin_mod = @import("mixin.zig");
 pub const MixinRegistry = mixin_mod.MixinRegistry;
 
+const log = std.log.scoped(.pugz);
+
 pub const TemplateError = error{
     OutOfMemory,
     LexerError,
@@ -146,7 +148,12 @@ pub fn parseWithSource(allocator: Allocator, source: []const u8) !ParseResult {
     var lex = pug.lexer.Lexer.init(allocator, source, .{}) catch return error.OutOfMemory;
     errdefer lex.deinit();
 
-    const tokens = lex.getTokens() catch return error.LexerError;
+    const tokens = lex.getTokens() catch {
+        if (lex.last_error) |err| {
+            log.err("{s} at line {d}, column {d}: {s}", .{ @tagName(err.code), err.line, err.column, err.message });
+        }
+        return error.LexerError;
+    };
 
     // Strip comments
     var stripped = pug.strip_comments.stripComments(allocator, tokens, .{}) catch return error.OutOfMemory;
@@ -157,6 +164,9 @@ pub fn parseWithSource(allocator: Allocator, source: []const u8) !ParseResult {
     defer pug_parser.deinit();
 
     const ast = pug_parser.parse() catch {
+        if (pug_parser.getError()) |err| {
+            log.err("{s} at line {d}, column {d}: {s}", .{ @tagName(err.code), err.line, err.column, err.message });
+        }
         return error.ParserError;
     };
 

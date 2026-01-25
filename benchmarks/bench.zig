@@ -9,7 +9,7 @@ const std = @import("std");
 const pugz = @import("pugz");
 
 const iterations: usize = 2000;
-const templates_dir = "src/benchmarks/templates";
+const templates_dir = "benchmarks/templates";
 
 // Data structures matching JSON files
 const SubFriend = struct {

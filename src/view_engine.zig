@@ -30,6 +30,8 @@ const cache = @import("cache");
 const Node = parser.Node;
 const MixinRegistry = mixin.MixinRegistry;
 
+const log = std.log.scoped(.pugz);
+
 pub const ViewEngineError = error{
     OutOfMemory,
     TemplateNotFound,
@@ -176,7 +178,8 @@ pub const ViewEngine = struct {
         defer self.cache_allocator.free(source);
 
         // Parse template - returns AST and normalized source that AST strings point to
-        var parse_result = template.parseWithSource(self.cache_allocator, source) catch {
+        var parse_result = template.parseWithSource(self.cache_allocator, source) catch |err| {
+            log.err("failed to parse template '{s}': {}", .{ full_path, err });
             return ViewEngineError.ParseError;
         };
         errdefer parse_result.deinit(self.cache_allocator);
@@ -322,7 +325,8 @@ pub const ViewEngine = struct {
         };
         defer self.cache_allocator.free(source);
 
-        const parse_result = template.parseWithSource(self.cache_allocator, source) catch {
+        const parse_result = template.parseWithSource(self.cache_allocator, source) catch |err| {
+            log.err("failed to parse template '{s}': {}", .{ full_path, err });
             return ViewEngineError.ParseError;
         };
 
@@ -494,7 +498,7 @@ test "ViewEngine - path escape protection" {
     const allocator = std.testing.allocator;
 
     var engine = try ViewEngine.init(allocator, .{
-        .views_dir = "src/tests/test_views",
+        .views_dir = "tests/test_views",
     });
     defer engine.deinit();
 

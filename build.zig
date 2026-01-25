@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) void {
     // Integration tests - general template tests
     const general_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests/general_test.zig"),
+            .root_source_file = b.path("tests/general_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -68,7 +68,7 @@ pub fn build(b: *std.Build) void {
     // Integration tests - doctype tests
     const doctype_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests/doctype_test.zig"),
+            .root_source_file = b.path("tests/doctype_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -81,7 +81,7 @@ pub fn build(b: *std.Build) void {
     // Integration tests - check_list tests (pug files vs expected html output)
     const check_list_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests/check_list_test.zig"),
+            .root_source_file = b.path("tests/check_list_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -122,7 +122,7 @@ pub fn build(b: *std.Build) void {
     const bench_exe = b.addExecutable(.{
         .name = "bench",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/benchmarks/bench.zig"),
+            .root_source_file = b.path("benchmarks/bench.zig"),
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
@@ -141,7 +141,7 @@ pub fn build(b: *std.Build) void {
     const test_includes_exe = b.addExecutable(.{
         .name = "test-includes",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests/test_includes.zig"),
+            .root_source_file = b.path("tests/test_includes.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{

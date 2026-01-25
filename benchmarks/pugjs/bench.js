@@ -54,8 +54,8 @@ console.log("Templates compiled. Starting benchmark...\n");
 
 console.log("╔═══════════════════════════════════════════════════════════════╗");
 console.log(`║        Pug.js Benchmark (${iterations} iterations)                    ║`);
-console.log("║        Templates: src/benchmarks/templates/*.pug              ║");
-console.log("║        Data:      src/benchmarks/templates/*.json             ║");
+console.log("║        Templates: benchmarks/templates/*.pug                   ║");
+console.log("║        Data:      benchmarks/templates/*.json                 ║");
 console.log("╚═══════════════════════════════════════════════════════════════╝");
 
 let total = 0;
