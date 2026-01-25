@@ -1,0 +1,144 @@
+extends layouts/base.pug
+include mixins/forms.pug
+include mixins/alerts.pug
+include mixins/buttons.pug
+
+block content
+  h1 Checkout
+
+  if errors
+    +alert("Please correct the errors below", "error")
+
+  .checkout-layout
+    form.checkout-form(action="/checkout" method="POST")
+      //- Shipping Information
+      section.checkout-section
+        h2 Shipping Information
+
+        .form-row
+          +input-required("firstName", "First Name", "text", "John")
+          +input-required("lastName", "Last Name", "text", "Doe")
+
+        +input-required("email", "Email Address", "email", "john@example.com")
+        +input-required("phone", "Phone Number", "tel", "+1 (555) 123-4567")
+
+        +input-required("address", "Street Address", "text", "123 Main St")
+        +input("address2", "Apartment, suite, etc.", "text", "Apt 4B")
+
+        .form-row
+          +input-required("city", "City", "text", "New York")
+          .form-group
+            label(for="state")
+              | State
+              span.required *
+            select.form-control#state(name="state" required)
+              option(value="") Select State
+              each state in states
+                option(value=state.code)= state.name
+          +input-required("zip", "ZIP Code", "text", "10001")
+
+        .form-group
+          label(for="country")
+            | Country
+            span.required *
+          select.form-control#country(name="country" required)
+            option(value="US" selected) United States
+            option(value="CA") Canada
+
+      //- Shipping Method
+      section.checkout-section
+        h2 Shipping Method
+
+        .shipping-options
+          each method in shippingMethods
+            label.shipping-option
+              input(type="radio" name="shipping" value=method.id checked=method.id == "standard")
+              .shipping-info
+                span.shipping-name #{method.name}
+                span.shipping-time #{method.time}
+              span.shipping-price
+                if method.price > 0
+                  | $#{method.price}
+                else
+                  | Free
+
+      //- Payment Information
+      section.checkout-section
+        h2 Payment Information
+
+        .payment-methods-select
+          label.payment-method
+            input(type="radio" name="paymentMethod" value="card" checked)
+            span Credit/Debit Card
+          label.payment-method
+            input(type="radio" name="paymentMethod" value="paypal")
+            span PayPal
+
+        .card-details(id="card-details")
+          +input-required("cardNumber", "Card Number", "text", "1234 5678 9012 3456")
+
+          .form-row
+            +input-required("expiry", "Expiration Date", "text", "MM/YY")
+            +input-required("cvv", "CVV", "text", "123")
+
+          +input-required("cardName", "Name on Card", "text", "John Doe")
+
+        .form-group
+          label.checkbox-label
+            input(type="checkbox" name="saveCard")
+            span Save card for future purchases
+
+      //- Billing Address
+      section.checkout-section
+        .form-group
+          label.checkbox-label
+            input(type="checkbox" name="sameAsShipping" checked)
+            span Billing address same as shipping
+
+        .billing-address(id="billing-address" style="display: none")
+          +input-required("billingAddress", "Street Address", "text", "")
+          .form-row
+            +input-required("billingCity", "City", "text", "")
+            +input-required("billingState", "State", "text", "")
+            +input-required("billingZip", "ZIP Code", "text", "")
+
+      button.btn.btn-primary.btn-lg(type="submit") Place Order
+
+    //- Order Summary Sidebar
+    aside.order-summary
+      h3 Order Summary
+
+      .summary-items
+        each item in cart.items
+          .summary-item
+            img(src=item.image alt=item.name)
+            .item-info
+              span.item-name #{item.name}
+              span.item-qty x#{item.quantity}
+            span.item-price $#{item.total}
+
+      .summary-details
+        .summary-row
+          span Subtotal
+          span $#{cart.subtotal}
+
+        if cart.discount
+          .summary-row.discount
+            span Discount
+            span -$#{cart.discount}
+
+        .summary-row
+          span Shipping
+          span#shipping-cost $#{selectedShipping.price}
+
+        .summary-row
+          span Tax
+          span $#{cart.tax}
+
+        .summary-row.total
+          span Total
+          span $#{cart.total}
+
+      .secure-checkout
+        span Secure Checkout
+        p Your information is protected with 256-bit SSL encryption

@@ -1,0 +1,38 @@
+//- Product card mixin - displays a product in grid/list view
+//- Parameters:
+//-   product: { id, name, price, image, rating, category }
+
+mixin product-card(product)
+  article.product-card
+    a.product-image(href="/products/" + product.id)
+      img(src=product.image alt=product.name)
+      if product.sale
+        span.badge.badge-sale Sale
+    .product-info
+      span.product-category #{product.category}
+      h3.product-name
+        a(href="/products/" + product.id) #{product.name}
+      .product-rating
+        +rating(product.rating)
+      .product-footer
+        span.product-price $#{product.price}
+        button.btn.btn-primary.btn-sm(data-product=product.id) Add to Cart
+
+//- Featured product card with larger display
+mixin product-featured(product)
+  article.product-card.product-featured
+    .product-image-large
+      img(src=product.image alt=product.name)
+      if product.sale
+        span.badge.badge-sale Sale
+    .product-details
+      span.product-category #{product.category}
+      h2.product-name #{product.name}
+      p.product-description #{product.description}
+      .product-rating
+        +rating(product.rating)
+        span.review-count (#{product.reviewCount} reviews)
+      .product-price-large $#{product.price}
+      .product-actions
+        button.btn.btn-primary.btn-lg Add to Cart
+        button.btn.btn-outline Wishlist

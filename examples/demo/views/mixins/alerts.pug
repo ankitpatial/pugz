@@ -1,0 +1,12 @@
+//- Alert/notification mixins
+
+mixin alert(message, type)
+  - var alertClass = type ? "alert alert-" + type : "alert alert-info"
+  .alert(class=alertClass)
+    p= message
+
+mixin alert-dismissible(message, type)
+  - var alertClass = type ? "alert alert-" + type : "alert alert-info"
+  .alert.alert-dismissible(class=alertClass)
+    p= message
+    button.alert-close(type="button" aria-label="Close") x

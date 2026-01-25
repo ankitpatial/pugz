@@ -1,0 +1,17 @@
+//- Cart item display
+
+mixin cart-item(item)
+  .cart-item
+    .cart-item-image
+      img(src=item.image alt=item.name)
+    .cart-item-details
+      h4.cart-item-name #{item.name}
+      p.cart-item-variant #{item.variant}
+      span.cart-item-price $#{item.price}
+    .cart-item-quantity
+      button.qty-btn.qty-minus -
+      input.qty-input(type="number" value=item.quantity min="1")
+      button.qty-btn.qty-plus +
+    .cart-item-total
+      span $#{item.total}
+    button.cart-item-remove(aria-label="Remove item") x

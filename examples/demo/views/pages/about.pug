@@ -1,0 +1,51 @@
+extends layouts/base.pug
+
+block title
+  title #{title} | Pugz Store
+
+block content
+  section.page-header
+    .container
+      h1 About Pugz
+      p A Pug template engine written in Zig
+
+  section.section
+    .container
+      .about-grid
+        .about-main
+          h2 What is Pugz?
+          p Pugz is a high-performance Pug template engine implemented in Zig. It provides both runtime interpretation and build-time compilation for maximum flexibility.
+
+          h3 Key Features
+          ul.feature-list
+            li Template inheritance with extends and blocks
+            li Partial includes for modular templates
+            li Mixins for reusable components
+            li Conditionals (if/else/unless)
+            li Iteration with each loops
+            li Variable interpolation
+            li Pretty-printed output
+            li LRU caching with TTL
+
+          h3 Performance
+          p Compiled templates run approximately 3x faster than Pug.js, with zero runtime parsing overhead.
+
+        .about-sidebar
+          .info-card
+            h3 This Demo Shows
+            ul
+              li Template inheritance (extends)
+              li Named blocks
+              li Conditional rendering
+              li Variable interpolation
+              li Simple iteration
+
+          .info-card
+            h3 Links
+            ul
+              li
+                a(href="https://github.com/ankitpatial/pugz") GitHub Repository
+              li
+                a(href="/products") View Products
+              li
+                a(href="/") Back to Home

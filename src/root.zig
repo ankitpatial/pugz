@@ -8,6 +8,7 @@
 pub const pug = @import("pug.zig");
 pub const view_engine = @import("view_engine.zig");
 pub const template = @import("template.zig");
+pub const parser = @import("parser.zig");
 
 // Re-export main types
 pub const ViewEngine = view_engine.ViewEngine;

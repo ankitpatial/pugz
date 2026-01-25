@@ -1,0 +1,47 @@
+extends layouts/base.pug
+
+block title
+  title #{title} | Pugz Store
+
+block content
+  section.page-header
+    .container
+      h1 Shopping Cart
+      p Review your items before checkout
+
+  section.section
+    .container
+      .cart-layout
+        .cart-main
+          .cart-items
+            each item in cartItems
+              .cart-item
+                .cart-item-info
+                  h3 #{name}
+                  p.text-muted #{variant}
+                  span.cart-item-price $#{price}
+                .cart-item-qty
+                  button.qty-btn -
+                  input.qty-input(type="text" value=quantity)
+                  button.qty-btn +
+                .cart-item-total $#{total}
+                button.cart-item-remove x
+
+          .cart-actions
+            a.btn.btn-outline(href="/products") Continue Shopping
+
+        .cart-summary
+          h3 Order Summary
+          .summary-row
+            span Subtotal
+            span $#{subtotal}
+          .summary-row
+            span Shipping
+            span.text-success Free
+          .summary-row
+            span Tax
+            span $#{tax}
+          .summary-row.summary-total
+            span Total
+            span $#{total}
+          a.btn.btn-primary.btn-block(href="/checkout") Proceed to Checkout

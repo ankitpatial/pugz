@@ -1,0 +1,56 @@
+extends layouts/base.pug
+
+block title
+  title #{title} | Pugz Store
+
+block content
+  section.hero
+    .container
+      h1 Welcome to Pugz Store
+      p Discover amazing products powered by Zig
+      .hero-actions
+        a.btn.btn-primary(href="/products") Shop Now
+        a.btn.btn-outline(href="/about") Learn More
+
+  section.section
+    .container
+      h2 Template Features
+      .feature-grid
+        .feature-card
+          h3 Conditionals
+          if authenticated
+            p.text-success You are logged in!
+          else
+            p.text-muted Please log in to continue.
+
+        .feature-card
+          h3 Variables
+          p Title: #{title}
+          p Cart Items: #{cartCount}
+
+        .feature-card
+          h3 Iteration
+          ul
+            each item in items
+              li= item
+
+        .feature-card
+          h3 Clean Syntax
+          p Pug templates compile to HTML with minimal overhead.
+
+  section.section.section-alt
+    .container
+      h2 Shop by Category
+      .category-grid
+        a.category-card(href="/products?cat=electronics")
+          .category-icon E
+          h3 Electronics
+          span 24 products
+        a.category-card(href="/products?cat=accessories")
+          .category-icon A
+          h3 Accessories
+          span 18 products
+        a.category-card(href="/products?cat=home")
+          .category-icon H
+          h3 Home Office
+          span 12 products

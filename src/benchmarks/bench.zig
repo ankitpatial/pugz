@@ -1,8 +1,9 @@
 //! Pugz Benchmark - Template Rendering
 //!
-//! This benchmark uses template.zig renderWithData function.
+//! This benchmark parses templates ONCE, then renders 2000 times.
+//! This matches how Pug.js benchmark works (compile once, render many).
 //!
-//! Run: zig build bench-v1
+//! Run: zig build bench
 
 const std = @import("std");
 const pugz = @import("pugz");
@@ -59,12 +60,12 @@ pub fn main() !void {
 
     std.debug.print("\n", .{});
     std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
-    std.debug.print("║   V1 Template Benchmark ({d} iterations)                      ║\n", .{iterations});
+    std.debug.print("║   Pugz Benchmark ({d} iterations, parse once)                 ║\n", .{iterations});
     std.debug.print("║   Templates: {s}/*.pug                           ║\n", .{templates_dir});
     std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
 
     // Load JSON data
-    std.debug.print("\nLoading JSON data...\n", .{});
+    std.debug.print("\nLoading JSON data and parsing templates...\n", .{});
 
     var data_arena = std.heap.ArenaAllocator.init(allocator);
     defer data_arena.deinit();
@@ -95,7 +96,7 @@ pub fn main() !void {
     const search = try loadJson(struct { searchRecords: []const SearchRecord }, data_alloc, "search-results.json");
     const friends_data = try loadJson(struct { friends: []const Friend }, data_alloc, "friends.json");
 
-    // Load template sources
+    // Load and PARSE templates ONCE (like Pug.js compiles once)
     const simple0_tpl = try loadTemplate(data_alloc, "simple-0.pug");
     const simple1_tpl = try loadTemplate(data_alloc, "simple-1.pug");
     const simple2_tpl = try loadTemplate(data_alloc, "simple-2.pug");
@@ -104,17 +105,26 @@ pub fn main() !void {
     const search_tpl = try loadTemplate(data_alloc, "search-results.pug");
     const friends_tpl = try loadTemplate(data_alloc, "friends.pug");
 
-    std.debug.print("Loaded. Starting benchmark...\n\n", .{});
+    // Parse templates once
+    const simple0_ast = try pugz.template.parse(data_alloc, simple0_tpl);
+    const simple1_ast = try pugz.template.parse(data_alloc, simple1_tpl);
+    const simple2_ast = try pugz.template.parse(data_alloc, simple2_tpl);
+    const if_expr_ast = try pugz.template.parse(data_alloc, if_expr_tpl);
+    const projects_ast = try pugz.template.parse(data_alloc, projects_tpl);
+    const search_ast = try pugz.template.parse(data_alloc, search_tpl);
+    const friends_ast = try pugz.template.parse(data_alloc, friends_tpl);
+
+    std.debug.print("Loaded. Starting benchmark (render only)...\n\n", .{});
 
     var total: f64 = 0;
 
-    total += try bench("simple-0", allocator, simple0_tpl, simple0);
-    total += try bench("simple-1", allocator, simple1_tpl, simple1);
-    total += try bench("simple-2", allocator, simple2_tpl, simple2);
-    total += try bench("if-expression", allocator, if_expr_tpl, if_expr);
-    total += try bench("projects-escaped", allocator, projects_tpl, projects);
-    total += try bench("search-results", allocator, search_tpl, search);
-    total += try bench("friends", allocator, friends_tpl, friends_data);
+    total += try bench("simple-0", allocator, simple0_ast, simple0);
+    total += try bench("simple-1", allocator, simple1_ast, simple1);
+    total += try bench("simple-2", allocator, simple2_ast, simple2);
+    total += try bench("if-expression", allocator, if_expr_ast, if_expr);
+    total += try bench("projects-escaped", allocator, projects_ast, projects);
+    total += try bench("search-results", allocator, search_ast, search);
+    total += try bench("friends", allocator, friends_ast, friends_data);
 
     std.debug.print("\n", .{});
     std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ "TOTAL", total });
@@ -136,7 +146,7 @@ fn loadTemplate(alloc: std.mem.Allocator, comptime filename: []const u8) ![]cons
 fn bench(
     name: []const u8,
     allocator: std.mem.Allocator,
-    template: []const u8,
+    ast: *pugz.parser.Node,
     data: anytype,
 ) !f64 {
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -145,7 +155,7 @@ fn bench(
     var timer = try std.time.Timer.start();
     for (0..iterations) |_| {
         _ = arena.reset(.retain_capacity);
-        _ = pugz.template.renderWithData(arena.allocator(), template, data) catch |err| {
+        _ = pugz.template.renderAst(arena.allocator(), ast, data) catch |err| {
             std.debug.print("  {s:<20} => ERROR: {}\n", .{ name, err });
             return 0;
         };

@@ -98,6 +98,7 @@ pub const LoadError = error{
     ParseError,
     WalkError,
     InvalidUtf8,
+    PathEscapesRoot,
 };
 
 // ============================================================================
@@ -121,7 +122,33 @@ pub const LoadResult = struct {
 // Default Implementations
 // ============================================================================
 
+/// Check if path is safe (doesn't escape root via .. or other tricks)
+/// Returns false if path would escape the root directory.
+pub fn isPathSafe(path: []const u8) bool {
+    // Reject absolute paths
+    if (path.len > 0 and path[0] == '/') {
+        return false;
+    }
+
+    var depth: i32 = 0;
+    var iter = mem.splitScalar(u8, path, '/');
+
+    while (iter.next()) |component| {
+        if (component.len == 0 or mem.eql(u8, component, ".")) {
+            continue;
+        }
+        if (mem.eql(u8, component, "..")) {
+            depth -= 1;
+            if (depth < 0) return false; // Escaped root
+        } else {
+            depth += 1;
+        }
+    }
+    return true;
+}
+
 /// Default path resolution - handles relative and absolute paths
+/// Rejects paths that would escape the base directory.
 pub fn defaultResolve(
     filename: []const u8,
     source: ?[]const u8,
@@ -131,6 +158,11 @@ pub fn defaultResolve(
 
     if (trimmed.len == 0) {
         return error.InvalidPath;
+    }
+
+    // Security: reject paths that escape root
+    if (!isPathSafe(trimmed)) {
+        return error.PathEscapesRoot;
     }
 
     // Absolute path (starts with /)
@@ -369,10 +401,11 @@ test "pathJoin - absolute paths" {
     try std.testing.expectEqualStrings("/absolute/path.pug", result);
 }
 
-test "defaultResolve - missing basedir for absolute path" {
+test "defaultResolve - rejects absolute paths as path escape" {
     const options = LoadOptions{};
     const result = defaultResolve("/absolute/path.pug", null, &options);
-    try std.testing.expectError(error.MissingBasedir, result);
+    // Absolute paths are rejected as path escape (security boundary)
+    try std.testing.expectError(error.PathEscapesRoot, result);
 }
 
 test "defaultResolve - missing filename for relative path" {

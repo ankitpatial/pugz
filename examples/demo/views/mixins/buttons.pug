@@ -1,5 +1,15 @@
-mixin btn(text, type="primary")
-  button(class="btn btn-" + type)= text
+//- Button mixins with various styles
 
-mixin btn-link(href, text)
-  a.btn.btn-link(href=href)= text
+mixin btn(text, type)
+  - var btnClass = type ? "btn btn-" + type : "btn btn-primary"
+  button(class=btnClass)= text
+
+mixin btn-link(href, text, type)
+  - var btnClass = type ? "btn btn-" + type : "btn btn-primary"
+  a(href=href class=btnClass)= text
+
+mixin btn-icon(icon, text, type)
+  - var btnClass = type ? "btn btn-" + type : "btn btn-primary"
+  button(class=btnClass)
+    span.icon= icon
+    span= text

@@ -1,0 +1,15 @@
+extends layouts/base.pug
+
+block title
+  title #{title} | Pugz Store
+
+block content
+  section.error-page
+    .container
+      .error-content
+        h1.error-code 404
+        h2 Page Not Found
+        p The page you are looking for does not exist or has been moved.
+        .error-actions
+          a.btn.btn-primary(href="/") Go Home
+          a.btn.btn-outline(href="/products") View Products

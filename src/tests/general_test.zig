@@ -52,7 +52,7 @@ test "Link with class and href (space separated)" {
     try expectOutput(
         "a(class='button' href='//google.com') Google",
         .{},
-        "<a class=\"button\" href=\"//google.com\">Google</a>",
+        "<a href=\"//google.com\" class=\"button\">Google</a>",
     );
 }
 
@@ -60,7 +60,7 @@ test "Link with class and href (comma separated)" {
     try expectOutput(
         "a(class='button', href='//google.com') Google",
         .{},
-        "<a class=\"button\" href=\"//google.com\">Google</a>",
+        "<a href=\"//google.com\" class=\"button\">Google</a>",
     );
 }
 

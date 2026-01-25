@@ -1,6 +1,3 @@
-*! I am using ClaudeCode to build it*
-*! Its Yet not ready for production use*
-
 # Pugz
 
 A Pug template engine for Zig, supporting both build-time compilation and runtime interpretation.
@@ -15,6 +12,8 @@ A Pug template engine for Zig, supporting both build-time compilation and runtim
 - Includes
 - Mixins with parameters, defaults, rest args, and block content
 - Comments (rendered and unbuffered)
+- Pretty printing with indentation
+- LRU cache with configurable size and TTL
 
 ## Installation
 
@@ -23,8 +22,6 @@ Add pugz as a dependency in your `build.zig.zon`:
 ```bash
 zig fetch --save "git+https://github.com/ankitpatial/pugz#main"
 ```
-
-> **Note:** The primary repository is hosted at `code.patial.tech`. GitHub is a mirror. For dependencies, prefer the GitHub mirror for better availability.
 
 ---
 
@@ -99,11 +96,16 @@ const std = @import("std");
 const pugz = @import("pugz");
 
 pub fn main() !void {
-    var engine = pugz.ViewEngine.init(.{
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var engine = try pugz.ViewEngine.init(allocator, .{
         .views_dir = "views",
     });
+    defer engine.deinit();
 
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
     const html = try engine.render(arena.allocator(), "index", .{
@@ -128,6 +130,32 @@ const html = try pugz.renderTemplate(allocator,
     .items = &[_][]const u8{ "one", "two", "three" },
 });
 ```
+
+---
+
+### ViewEngine Options
+
+```zig
+var engine = try pugz.ViewEngine.init(allocator, .{
+    .views_dir = "views",           // Root directory for templates
+    .extension = ".pug",            // File extension (default: .pug)
+    .pretty = false,                // Enable pretty-printed output
+    .cache_enabled = true,          // Enable AST caching
+    .max_cached_templates = 100,    // LRU cache size (0 = unlimited)
+    .cache_ttl_seconds = 5,         // Cache TTL for development (0 = never expires)
+});
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `views_dir` | `"views"` | Root directory containing templates |
+| `extension` | `".pug"` | File extension for templates |
+| `pretty` | `false` | Enable pretty-printed HTML with indentation |
+| `cache_enabled` | `true` | Enable AST caching for performance |
+| `max_cached_templates` | `0` | Max templates in LRU cache (0 = unlimited hashmap) |
+| `cache_ttl_seconds` | `0` | Cache TTL in seconds (0 = never expires) |
 
 ---
 

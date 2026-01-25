@@ -1,0 +1,25 @@
+//- Form input mixins
+
+mixin input(name, label, type, placeholder)
+  .form-group
+    label(for=name)= label
+    input.form-control(type=type id=name name=name placeholder=placeholder)
+
+mixin input-required(name, label, type, placeholder)
+  .form-group
+    label(for=name)
+      = label
+      span.required *
+    input.form-control(type=type id=name name=name placeholder=placeholder required)
+
+mixin select(name, label, options)
+  .form-group
+    label(for=name)= label
+    select.form-control(id=name name=name)
+      each opt in options
+        option(value=opt.value)= opt.label
+
+mixin textarea(name, label, placeholder, rows)
+  .form-group
+    label(for=name)= label
+    textarea.form-control(id=name name=name placeholder=placeholder rows=rows)

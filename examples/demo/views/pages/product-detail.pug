@@ -1,0 +1,65 @@
+extends layouts/base.pug
+
+block title
+  title #{productName} | Pugz Store
+
+block content
+  section.page-header
+    .container
+      .breadcrumb
+        a(href="/") Home
+        span /
+        a(href="/products") Products
+        span /
+        span #{productName}
+
+  section.section
+    .container
+      .product-detail
+        .product-detail-image
+          .product-image-placeholder
+        .product-detail-info
+          span.product-category #{category}
+          h1 #{productName}
+          .product-price-large $#{price}
+          p.product-description #{description}
+
+          .product-actions
+            .quantity-selector
+              label Quantity:
+              button.qty-btn -
+              input.qty-input(type="text" value="1")
+              button.qty-btn +
+            a.btn.btn-primary.btn-lg(href="/cart") Add to Cart
+
+          .product-meta
+            p SKU: #{sku}
+            p Category: #{category}
+
+  section.section.section-alt
+    .container
+      h2 You May Also Like
+      .product-grid
+        .product-card
+          .product-image
+          .product-info
+            span.product-category Electronics
+            h3.product-name Smart Watch Pro
+            .product-price $199.99
+            a.btn.btn-sm(href="/products/2") View Details
+
+        .product-card
+          .product-image
+          .product-info
+            span.product-category Accessories
+            h3.product-name Laptop Stand
+            .product-price $49.99
+            a.btn.btn-sm(href="/products/3") View Details
+
+        .product-card
+          .product-image
+          .product-info
+            span.product-category Accessories
+            h3.product-name USB-C Hub
+            .product-price $39.99
+            a.btn.btn-sm(href="/products/4") View Details

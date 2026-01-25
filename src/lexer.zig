@@ -335,6 +335,16 @@ pub const Lexer = struct {
 
     const IndentType = enum { tabs, spaces };
 
+    /// Get current indent level (top of stack) - O(1)
+    inline fn currentIndent(self: *const Lexer) usize {
+        return self.indent_stack.items[self.indent_stack.items.len - 1];
+    }
+
+    /// Get previous indent level (second from top) - O(1)
+    inline fn previousIndent(self: *const Lexer) usize {
+        return self.indent_stack.items[self.indent_stack.items.len - 2];
+    }
+
     pub fn init(allocator: Allocator, str: []const u8, options: LexerOptions) !Lexer {
         // Strip UTF-8 BOM if present
         var input = str;
@@ -389,6 +399,16 @@ pub const Lexer = struct {
         if (self.input_allocated.len > 0) {
             self.allocator.free(self.input_allocated);
         }
+    }
+
+    /// Deinit without freeing input_allocated - caller takes ownership of it
+    /// Returns the input_allocated slice that caller must free
+    pub fn deinitKeepInput(self: *Lexer) []const u8 {
+        self.indent_stack.deinit(self.allocator);
+        self.tokens.deinit(self.allocator);
+        const input = self.input_allocated;
+        self.input_allocated = &.{}; // Clear so regular deinit won't double-free
+        return input;
     }
 
     // ========================================================================
@@ -634,9 +654,9 @@ pub const Lexer = struct {
             return false;
         }
 
-        // Add outdent tokens for remaining indentation
-        var i: usize = 0;
-        while (i < self.indent_stack.items.len and self.indent_stack.items[i] > 0) : (i += 1) {
+        // Add outdent tokens for remaining indentation (pop from stack end)
+        while (self.indent_stack.items.len > 1 and self.currentIndent() > 0) {
+            _ = self.indent_stack.pop();
             var outdent_tok = self.tok(.outdent, .none);
             self.tokEnd(&outdent_tok);
             self.tokens.append(self.allocator, outdent_tok) catch return false;
@@ -2211,34 +2231,34 @@ pub const Lexer = struct {
         }
 
         // Outdent
-        if (indents < self.indent_stack.items[0]) {
+        if (indents < self.currentIndent()) {
             var outdent_count: usize = 0;
-            while (self.indent_stack.items[0] > indents) {
-                if (self.indent_stack.items.len > 1 and self.indent_stack.items[1] < indents) {
+            while (self.currentIndent() > indents) {
+                if (self.indent_stack.items.len > 1 and self.previousIndent() < indents) {
                     self.setError(.INCONSISTENT_INDENTATION, "Inconsistent indentation");
                     return false;
                 }
                 outdent_count += 1;
-                _ = self.indent_stack.orderedRemove(0);
+                _ = self.indent_stack.pop(); // O(1) instead of O(n)
             }
             while (outdent_count > 0) : (outdent_count -= 1) {
                 self.colno = 1;
                 var outdent_token = self.tok(.outdent, .none);
-                self.colno = self.indent_stack.items[0] + 1;
+                self.colno = self.currentIndent() + 1;
                 self.tokens.append(self.allocator, outdent_token) catch return false;
                 self.tokEnd(&outdent_token);
             }
-        } else if (indents > 0 and indents != self.indent_stack.items[0]) {
+        } else if (indents > 0 and indents != self.currentIndent()) {
             // Indent
             var indent_token = self.tok(.indent, .none);
             self.colno = 1 + indents;
             self.tokens.append(self.allocator, indent_token) catch return false;
             self.tokEnd(&indent_token);
-            self.indent_stack.insert(self.allocator, 0, indents) catch return false;
+            self.indent_stack.append(self.allocator, indents) catch return false; // O(1) instead of O(n)
         } else {
             // Newline
             var newline_token = self.tok(.newline, .none);
-            self.colno = 1 + @min(self.indent_stack.items[0], indents);
+            self.colno = 1 + @min(self.currentIndent(), indents);
             self.tokens.append(self.allocator, newline_token) catch return false;
             self.tokEnd(&newline_token);
         }
@@ -2253,7 +2273,7 @@ pub const Lexer = struct {
         const captures = self.scanIndentation() orelse return false;
         const indents = forced_indents orelse captures.indent.len;
 
-        if (indents <= self.indent_stack.items[0]) return false;
+        if (indents <= self.currentIndent()) return false;
 
         var start_token = self.tok(.start_pipeless_text, .none);
         self.tokEnd(&start_token);
@@ -2307,7 +2327,7 @@ pub const Lexer = struct {
                 else
                     "";
                 tokens_list.append(self.allocator, text_content) catch return false;
-            } else if (line_indent > self.indent_stack.items[0]) {
+            } else if (line_indent > self.currentIndent()) {
                 // line is indented less than the first line but is still indented
                 // need to retry lexing the text block with new indent level
                 _ = self.tokens.pop();

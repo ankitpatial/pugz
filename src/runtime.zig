@@ -89,66 +89,60 @@ pub const AttrValue = union(enum) {
 /// Returns empty string for false/null values.
 /// For true values, returns terse form " key" or full form " key="key"".
 pub fn attr(allocator: Allocator, key: []const u8, val: AttrValue, escaped: bool, terse: bool) ![]const u8 {
+    var result: ArrayListUnmanaged(u8) = .{};
+    errdefer result.deinit(allocator);
+    try appendAttr(allocator, &result, key, val, escaped, terse);
+    if (result.items.len == 0) {
+        return "";
+    }
+    return try result.toOwnedSlice(allocator);
+}
+
+/// Append attribute directly to output buffer - avoids intermediate allocations
+/// This is the preferred method for rendering attributes in hot paths
+pub fn appendAttr(allocator: Allocator, output: *ArrayListUnmanaged(u8), key: []const u8, val: AttrValue, escaped: bool, terse: bool) !void {
     switch (val) {
-        .none => return try allocator.dupe(u8, ""),
+        .none => return,
         .boolean => |b| {
-            if (!b) return try allocator.dupe(u8, "");
+            if (!b) return;
             // true value
-            if (terse) {
-                var result: ArrayListUnmanaged(u8) = .{};
-                errdefer result.deinit(allocator);
-                try result.append(allocator, ' ');
-                try result.appendSlice(allocator, key);
-                return try result.toOwnedSlice(allocator);
-            } else {
-                var result: ArrayListUnmanaged(u8) = .{};
-                errdefer result.deinit(allocator);
-                try result.append(allocator, ' ');
-                try result.appendSlice(allocator, key);
-                try result.appendSlice(allocator, "=\"");
-                try result.appendSlice(allocator, key);
-                try result.append(allocator, '"');
-                return try result.toOwnedSlice(allocator);
+            try output.append(allocator, ' ');
+            try output.appendSlice(allocator, key);
+            if (!terse) {
+                try output.appendSlice(allocator, "=\"");
+                try output.appendSlice(allocator, key);
+                try output.append(allocator, '"');
             }
         },
         .number => |n| {
-            var result: ArrayListUnmanaged(u8) = .{};
-            errdefer result.deinit(allocator);
-            try result.append(allocator, ' ');
-            try result.appendSlice(allocator, key);
-            try result.appendSlice(allocator, "=\"");
+            try output.append(allocator, ' ');
+            try output.appendSlice(allocator, key);
+            try output.appendSlice(allocator, "=\"");
 
-            // Format number
+            // Format number directly to buffer
             var buf: [32]u8 = undefined;
-            const num_str = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return error.FormatError;
-            try result.appendSlice(allocator, num_str);
+            const num_str = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return;
+            try output.appendSlice(allocator, num_str);
 
-            try result.append(allocator, '"');
-            return try result.toOwnedSlice(allocator);
+            try output.append(allocator, '"');
         },
         .string => |s| {
-            // Empty class or style returns empty
+            // Skip empty class or style
             if (s.len == 0 and (mem.eql(u8, key, "class") or mem.eql(u8, key, "style"))) {
-                return try allocator.dupe(u8, "");
+                return;
             }
 
-            var result: ArrayListUnmanaged(u8) = .{};
-            errdefer result.deinit(allocator);
-
-            try result.append(allocator, ' ');
-            try result.appendSlice(allocator, key);
-            try result.appendSlice(allocator, "=\"");
+            try output.append(allocator, ' ');
+            try output.appendSlice(allocator, key);
+            try output.appendSlice(allocator, "=\"");
 
             if (escaped) {
-                const escaped_val = try escape(allocator, s);
-                defer allocator.free(escaped_val);
-                try result.appendSlice(allocator, escaped_val);
+                try appendEscaped(allocator, output, s);
             } else {
-                try result.appendSlice(allocator, s);
+                try output.appendSlice(allocator, s);
             }
 
-            try result.append(allocator, '"');
-            return try result.toOwnedSlice(allocator);
+            try output.append(allocator, '"');
         },
     }
 }

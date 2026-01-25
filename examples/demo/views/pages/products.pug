@@ -1,0 +1,79 @@
+extends layouts/base.pug
+
+block title
+  title #{title} | Pugz Store
+
+block content
+  section.page-header
+    .container
+      h1 All Products
+      p Browse our selection of quality products
+
+  section.section
+    .container
+      .products-toolbar
+        span.results-count #{productCount} products
+        .sort-options
+          label Sort by:
+          select
+            option(value="featured") Featured
+            option(value="price-low") Price: Low to High
+            option(value="price-high") Price: High to Low
+
+      .product-grid
+        .product-card
+          .product-image
+            .product-badge Sale
+          .product-info
+            span.product-category Electronics
+            h3.product-name Wireless Headphones
+            .product-price $79.99
+            a.btn.btn-sm(href="/products/1") View Details
+
+        .product-card
+          .product-image
+          .product-info
+            span.product-category Electronics
+            h3.product-name Smart Watch Pro
+            .product-price $199.99
+            a.btn.btn-sm(href="/products/2") View Details
+
+        .product-card
+          .product-image
+          .product-info
+            span.product-category Accessories
+            h3.product-name Laptop Stand
+            .product-price $49.99
+            a.btn.btn-sm(href="/products/3") View Details
+
+        .product-card
+          .product-image
+            .product-badge Sale
+          .product-info
+            span.product-category Accessories
+            h3.product-name USB-C Hub
+            .product-price $39.99
+            a.btn.btn-sm(href="/products/4") View Details
+
+        .product-card
+          .product-image
+          .product-info
+            span.product-category Electronics
+            h3.product-name Mechanical Keyboard
+            .product-price $129.99
+            a.btn.btn-sm(href="/products/5") View Details
+
+        .product-card
+          .product-image
+          .product-info
+            span.product-category Home Office
+            h3.product-name Desk Lamp
+            .product-price $34.99
+            a.btn.btn-sm(href="/products/6") View Details
+
+      .pagination
+        a.page-link(href="#") Prev
+        a.page-link.active(href="#") 1
+        a.page-link(href="#") 2
+        a.page-link(href="#") 3
+        a.page-link(href="#") Next
