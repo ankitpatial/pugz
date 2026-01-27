@@ -7,7 +7,6 @@
 //!   - Conditionals and loops
 //!   - Data binding
 //!   - Pretty printing
-//!   - LRU cache with TTL
 
 const std = @import("std");
 const httpz = @import("httpz");
@@ -208,11 +207,9 @@ const App = struct {
     pub fn init(allocator: Allocator) !App {
         return .{
             .allocator = allocator,
-            .view = try pugz.ViewEngine.init(allocator, .{
+            .view = pugz.ViewEngine.init(.{
                 .views_dir = "views",
                 .pretty = true,
-                .max_cached_templates = 50,
-                .cache_ttl_seconds = 10, // 10s TTL for development
             }),
         };
     }

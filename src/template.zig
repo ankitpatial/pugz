@@ -205,14 +205,8 @@ fn detectDoctype(node: *Node, ctx: *RenderContext) void {
     }
 }
 
-// Tags where whitespace is significant - don't add indentation inside these
-const whitespace_sensitive_tags = std.StaticStringMap(void).initComptime(.{
-    .{ "pre", {} },
-    .{ "textarea", {} },
-    .{ "script", {} },
-    .{ "style", {} },
-    .{ "code", {} },
-});
+// Tags where whitespace is significant - import from runtime (shared with codegen)
+const whitespace_sensitive_tags = runtime.whitespace_sensitive_tags;
 
 /// Write indentation (two spaces per level)
 fn writeIndent(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), level: u32) Allocator.Error!void {
@@ -800,17 +794,8 @@ fn renderBlockComment(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
 }
 
 // Doctype mappings
-const doctypes = std.StaticStringMap([]const u8).initComptime(.{
-    .{ "html", "<!DOCTYPE html>" },
-    .{ "xml", "<?xml version=\"1.0\" encoding=\"utf-8\" ?>" },
-    .{ "transitional", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">" },
-    .{ "strict", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">" },
-    .{ "frameset", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Frameset//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-frameset.dtd\">" },
-    .{ "1.1", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">" },
-    .{ "basic", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML Basic 1.1//EN\" \"http://www.w3.org/TR/xhtml-basic/xhtml-basic11.dtd\">" },
-    .{ "mobile", "<!DOCTYPE html PUBLIC \"-//WAPFORUM//DTD XHTML Mobile 1.2//EN\" \"http://www.openmobilealliance.org/tech/DTD/xhtml-mobile12.dtd\">" },
-    .{ "plist", "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" },
-});
+// Import doctypes from runtime (shared with codegen)
+const doctypes = runtime.doctypes;
 
 fn renderDoctype(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), doctype: *Node) Allocator.Error!void {
     if (doctype.val) |val| {

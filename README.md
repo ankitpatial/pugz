@@ -1,6 +1,6 @@
 # Pugz
 
-A Pug template engine written in Zig. Templates are parsed once and cached, then rendered with data at runtime.
+A Pug template engine written in Zig. Templates are parsed and rendered with data at runtime.
 
 ## Features
 
@@ -13,7 +13,6 @@ A Pug template engine written in Zig. Templates are parsed once and cached, then
 - Mixins with parameters, defaults, rest args, and block content
 - Comments (rendered and unbuffered)
 - Pretty printing with indentation
-- LRU cache with configurable size and TTL
 
 ## Installation
 
@@ -40,7 +39,7 @@ exe.root_module.addImport("pugz", pugz_dep.module("pugz"));
 
 ### ViewEngine (Recommended)
 
-The `ViewEngine` provides template caching and file-based template management for web servers.
+The `ViewEngine` provides file-based template management for web servers.
 
 ```zig
 const std = @import("std");
@@ -52,7 +51,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Initialize once at server startup
-    var engine = try pugz.ViewEngine.init(allocator, .{
+    var engine = pugz.ViewEngine.init(.{
         .views_dir = "views",
     });
     defer engine.deinit();
@@ -95,7 +94,7 @@ const httpz = @import("httpz");
 var engine: pugz.ViewEngine = undefined;
 
 pub fn main() !void {
-    engine = try pugz.ViewEngine.init(allocator, .{
+    engine = pugz.ViewEngine.init(.{
         .views_dir = "views",
     });
     defer engine.deinit();
@@ -118,13 +117,10 @@ fn handler(_: *Handler, _: *httpz.Request, res: *httpz.Response) !void {
 ## ViewEngine Options
 
 ```zig
-var engine = try pugz.ViewEngine.init(allocator, .{
+var engine = pugz.ViewEngine.init(.{
     .views_dir = "views",           // Root directory for templates
     .extension = ".pug",            // File extension (default: .pug)
     .pretty = false,                // Enable pretty-printed output
-    .cache_enabled = true,          // Enable AST caching
-    .max_cached_templates = 100,    // LRU cache size (0 = unlimited)
-    .cache_ttl_seconds = 5,         // Cache TTL for development (0 = never expires)
 });
 ```
 
@@ -133,9 +129,6 @@ var engine = try pugz.ViewEngine.init(allocator, .{
 | `views_dir` | `"views"` | Root directory containing templates |
 | `extension` | `".pug"` | File extension for templates |
 | `pretty` | `false` | Enable pretty-printed HTML with indentation |
-| `cache_enabled` | `true` | Enable AST caching for performance |
-| `max_cached_templates` | `0` | Max templates in LRU cache (0 = unlimited hashmap) |
-| `cache_ttl_seconds` | `0` | Cache TTL in seconds (0 = never expires) |
 
 ---
 

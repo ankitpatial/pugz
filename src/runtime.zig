@@ -7,6 +7,28 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 // Pug Runtime - HTML generation utilities
 // ============================================================================
 
+/// DOCTYPE mappings - shared across codegen and template modules
+pub const doctypes = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "html", "<!DOCTYPE html>" },
+    .{ "xml", "<?xml version=\"1.0\" encoding=\"utf-8\" ?>" },
+    .{ "transitional", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">" },
+    .{ "strict", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">" },
+    .{ "frameset", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Frameset//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-frameset.dtd\">" },
+    .{ "1.1", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">" },
+    .{ "basic", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML Basic 1.1//EN\" \"http://www.w3.org/TR/xhtml-basic/xhtml-basic11.dtd\">" },
+    .{ "mobile", "<!DOCTYPE html PUBLIC \"-//WAPFORUM//DTD XHTML Mobile 1.2//EN\" \"http://www.openmobilealliance.org/tech/DTD/xhtml-mobile12.dtd\">" },
+    .{ "plist", "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" },
+});
+
+/// Whitespace-sensitive tags - shared across codegen and template modules
+pub const whitespace_sensitive_tags = std.StaticStringMap(void).initComptime(.{
+    .{ "pre", {} },
+    .{ "textarea", {} },
+    .{ "script", {} },
+    .{ "style", {} },
+    .{ "code", {} },
+});
+
 /// Escape HTML special characters in a string.
 /// Characters escaped: " & < >
 pub fn escape(allocator: Allocator, html: []const u8) ![]const u8 {
@@ -244,15 +266,20 @@ pub fn appendEscaped(allocator: Allocator, result: *ArrayListUnmanaged(u8), html
     }
 }
 
+/// Comptime-generated lookup table for HTML character escaping
+const escape_table: [256]?[]const u8 = blk: {
+    var table: [256]?[]const u8 = .{null} ** 256;
+    table['"'] = "&quot;";
+    table['&'] = "&amp;";
+    table['<'] = "&lt;";
+    table['>'] = "&gt;";
+    break :blk table;
+};
+
 /// Escape a single character, returning the escape sequence or null if no escaping needed
-pub fn escapeChar(c: u8) ?[]const u8 {
-    return switch (c) {
-        '"' => "&quot;",
-        '&' => "&amp;",
-        '<' => "&lt;",
-        '>' => "&gt;",
-        else => null,
-    };
+/// Uses comptime lookup table for O(1) access instead of switch statement
+pub inline fn escapeChar(c: u8) ?[]const u8 {
+    return escape_table[c];
 }
 
 /// Attribute entry for attrs function
@@ -452,7 +479,7 @@ pub fn merge(allocator: Allocator, a: []const MergedAttrEntry, b: []const Merged
     var result = MergedAttrs.init(allocator);
     errdefer result.deinit();
 
-    // Pre-allocate capacity to avoid reallocations (cache-friendly)
+    // Pre-allocate capacity to avoid reallocations
     const total_entries = a.len + b.len;
     if (total_entries > 0) {
         try result.entries.ensureTotalCapacity(allocator, total_entries);
@@ -492,7 +519,7 @@ fn mergeEntry(result: *MergedAttrs, entry: MergedAttrEntry) !void {
 
     switch (key_type) {
         .class => {
-            // O(1) lookup using cached index
+            // O(1) lookup using stored index
             if (result.class_idx) |idx| {
                 @branchHint(.likely);
                 try mergeClassValue(result, idx, entry.value);
@@ -502,7 +529,7 @@ fn mergeEntry(result: *MergedAttrs, entry: MergedAttrEntry) !void {
             }
         },
         .style => {
-            // O(1) lookup using cached index
+            // O(1) lookup using stored index
             if (result.style_idx) |idx| {
                 @branchHint(.likely);
                 try mergeStyleValue(result, idx, entry.value);

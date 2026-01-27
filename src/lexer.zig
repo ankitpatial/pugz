@@ -785,11 +785,21 @@ pub const Lexer = struct {
         return true;
     }
 
-    fn isWordChar(c: u8) bool {
-        return (c >= 'a' and c <= 'z') or
-            (c >= 'A' and c <= 'Z') or
-            (c >= '0' and c <= '9') or
-            c == '_';
+    /// Comptime-generated lookup table for word characters (alphanumeric + underscore)
+    const word_char_table: [256]bool = blk: {
+        var table: [256]bool = .{false} ** 256;
+        var i: u16 = 'a';
+        while (i <= 'z') : (i += 1) table[i] = true;
+        i = 'A';
+        while (i <= 'Z') : (i += 1) table[i] = true;
+        i = '0';
+        while (i <= '9') : (i += 1) table[i] = true;
+        table['_'] = true;
+        break :blk table;
+    };
+
+    inline fn isWordChar(c: u8) bool {
+        return word_char_table[c];
     }
 
     fn filter(self: *Lexer, in_include: bool) bool {

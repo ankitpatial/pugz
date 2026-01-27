@@ -14,33 +14,31 @@ pub const Token = lexer.Token;
 // Inline Tags (tags that are typically inline in HTML)
 // ============================================================================
 
-const inline_tags = [_][]const u8{
-    "a",
-    "abbr",
-    "acronym",
-    "b",
-    "br",
-    "code",
-    "em",
-    "font",
-    "i",
-    "img",
-    "ins",
-    "kbd",
-    "map",
-    "samp",
-    "small",
-    "span",
-    "strong",
-    "sub",
-    "sup",
-};
+/// Comptime hash map for O(1) inline tag lookup instead of O(19) linear search
+const inline_tags_map = std.StaticStringMap(void).initComptime(.{
+    .{ "a", {} },
+    .{ "abbr", {} },
+    .{ "acronym", {} },
+    .{ "b", {} },
+    .{ "br", {} },
+    .{ "code", {} },
+    .{ "em", {} },
+    .{ "font", {} },
+    .{ "i", {} },
+    .{ "img", {} },
+    .{ "ins", {} },
+    .{ "kbd", {} },
+    .{ "map", {} },
+    .{ "samp", {} },
+    .{ "small", {} },
+    .{ "span", {} },
+    .{ "strong", {} },
+    .{ "sub", {} },
+    .{ "sup", {} },
+});
 
-fn isInlineTag(name: []const u8) bool {
-    for (inline_tags) |tag| {
-        if (mem.eql(u8, name, tag)) return true;
-    }
-    return false;
+inline fn isInlineTag(name: []const u8) bool {
+    return inline_tags_map.has(name);
 }
 
 // ============================================================================

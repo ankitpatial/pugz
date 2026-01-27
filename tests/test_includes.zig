@@ -7,12 +7,9 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Test: Simple include from test_views
-    var engine = pugz.ViewEngine.init(allocator, .{
+    var engine = pugz.ViewEngine.init(.{
         .views_dir = "tests/sample/01",
-    }) catch |err| {
-        std.debug.print("Init Error: {}\n", .{err});
-        return err;
-    };
+    });
     defer engine.deinit();
 
     const html = engine.render(allocator, "home", .{}) catch |err| {

@@ -3,19 +3,11 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    // Get cache.zig dependency
-    const cache_dep = b.dependency("cache", .{
-        .target = target,
-        .optimize = optimize,
-    });
 
     const mod = b.addModule("pugz", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cache", .module = cache_dep.module("cache") },
-        },
     });
 
     // Creates an executable that will run `test` blocks from the provided module.

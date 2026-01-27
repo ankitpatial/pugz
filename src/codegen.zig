@@ -13,29 +13,19 @@ pub const Node = parser.Node;
 pub const NodeType = parser.NodeType;
 pub const Attribute = parser.Attribute;
 
-// Import runtime for attribute handling and HTML escaping
+// Import runtime for attribute handling, HTML escaping, and shared constants
 const runtime = @import("runtime.zig");
 pub const escapeChar = runtime.escapeChar;
+pub const doctypes = runtime.doctypes;
+pub const whitespace_sensitive_tags = runtime.whitespace_sensitive_tags;
 
 // Import error types
 const pug_error = @import("error.zig");
 pub const PugError = pug_error.PugError;
 
 // ============================================================================
-// Doctypes
+// Void Elements
 // ============================================================================
-
-pub const doctypes = std.StaticStringMap([]const u8).initComptime(.{
-    .{ "html", "<!DOCTYPE html>" },
-    .{ "xml", "<?xml version=\"1.0\" encoding=\"utf-8\" ?>" },
-    .{ "transitional", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">" },
-    .{ "strict", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">" },
-    .{ "frameset", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Frameset//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-frameset.dtd\">" },
-    .{ "1.1", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">" },
-    .{ "basic", "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML Basic 1.1//EN\" \"http://www.w3.org/TR/xhtml-basic/xhtml-basic11.dtd\">" },
-    .{ "mobile", "<!DOCTYPE html PUBLIC \"-//WAPFORUM//DTD XHTML Mobile 1.2//EN\" \"http://www.openmobilealliance.org/tech/DTD/xhtml-mobile12.dtd\">" },
-    .{ "plist", "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" },
-});
 
 // Self-closing (void) elements in HTML5
 pub const void_elements = std.StaticStringMap(void).initComptime(.{
@@ -53,14 +43,6 @@ pub const void_elements = std.StaticStringMap(void).initComptime(.{
     .{ "source", {} },
     .{ "track", {} },
     .{ "wbr", {} },
-});
-
-// Whitespace-sensitive tags
-pub const whitespace_sensitive_tags = std.StaticStringMap(void).initComptime(.{
-    .{ "pre", {} },
-    .{ "textarea", {} },
-    .{ "script", {} },
-    .{ "style", {} },
 });
 
 // ============================================================================
