@@ -99,12 +99,17 @@ pub fn compile(
     source: []const u8,
     options: CompileOptions,
 ) CompileError!CompileResult {
+    // Create arena for entire compilation pipeline - all temporary allocations freed at once
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const temp_allocator = arena.allocator();
+
     var result = CompileResult{
         .html = &[_]u8{},
     };
 
     // Stage 1: Lex the source
-    var lex_inst = Lexer.init(allocator, source, .{
+    var lex_inst = Lexer.init(temp_allocator, source, .{
         .filename = options.filename,
     }) catch {
         return error.LexerError;
@@ -139,7 +144,7 @@ pub fn compile(
 
     // Stage 2: Strip comments
     var stripped = strip_comments.stripComments(
-        allocator,
+        temp_allocator,
         tokens,
         .{
             .strip_unbuffered = options.strip_unbuffered_comments,
@@ -149,10 +154,10 @@ pub fn compile(
     ) catch {
         return error.LexerError;
     };
-    defer stripped.deinit(allocator);
+    defer stripped.deinit(temp_allocator);
 
     // Stage 3: Parse tokens to AST
-    var parse = Parser.init(allocator, stripped.tokens.items, options.filename, source);
+    var parse = Parser.init(temp_allocator, stripped.tokens.items, options.filename, source);
     defer parse.deinit();
 
     const ast = parse.parse() catch {
@@ -181,18 +186,18 @@ pub fn compile(
         return error.ParserError;
     };
     defer {
-        ast.deinit(allocator);
-        allocator.destroy(ast);
+        ast.deinit(temp_allocator);
+        temp_allocator.destroy(ast);
     }
 
     // Stage 4: Link (resolve extends/blocks)
-    var link_result = linker.link(allocator, ast) catch {
+    var link_result = linker.link(temp_allocator, ast) catch {
         return error.LinkerError;
     };
-    defer link_result.deinit(allocator);
+    defer link_result.deinit(temp_allocator);
 
     // Stage 5: Generate HTML
-    var compiler = Compiler.init(allocator, .{
+    var compiler = Compiler.init(temp_allocator, .{
         .pretty = options.pretty,
         .doctype = options.doctype,
         .debug = options.debug,
@@ -203,7 +208,8 @@ pub fn compile(
         return error.CodegenError;
     };
 
-    result.html = html;
+    // Dupe final HTML to base allocator before arena cleanup
+    result.html = try allocator.dupe(u8, html);
     return result;
 }
 

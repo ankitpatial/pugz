@@ -59,29 +59,38 @@ pub const RenderContext = struct {
 
 /// Render a template with data
 pub fn renderWithData(allocator: Allocator, source: []const u8, data: anytype) ![]const u8 {
+    // Create arena for entire compilation pipeline - all temporary allocations freed at once
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const temp_allocator = arena.allocator();
+
     // Lex
-    var lex = pug.lexer.Lexer.init(allocator, source, .{}) catch return error.OutOfMemory;
+    var lex = pug.lexer.Lexer.init(temp_allocator, source, .{}) catch return error.OutOfMemory;
     defer lex.deinit();
 
     const tokens = lex.getTokens() catch return error.LexerError;
 
     // Strip comments
-    var stripped = pug.strip_comments.stripComments(allocator, tokens, .{}) catch return error.OutOfMemory;
-    defer stripped.deinit(allocator);
+    var stripped = pug.strip_comments.stripComments(temp_allocator, tokens, .{}) catch return error.OutOfMemory;
+    defer stripped.deinit(temp_allocator);
 
     // Parse
-    var pug_parser = pug.parser.Parser.init(allocator, stripped.tokens.items, null, source);
+    var pug_parser = pug.parser.Parser.init(temp_allocator, stripped.tokens.items, null, source);
     defer pug_parser.deinit();
 
     const ast = pug_parser.parse() catch {
         return error.ParserError;
     };
     defer {
-        ast.deinit(allocator);
-        allocator.destroy(ast);
+        ast.deinit(temp_allocator);
+        temp_allocator.destroy(ast);
     }
 
-    return renderAst(allocator, ast, data);
+    // Render to temporary buffer
+    const html = try renderAst(temp_allocator, ast, data);
+
+    // Dupe final HTML to base allocator before arena cleanup
+    return allocator.dupe(u8, html);
 }
 
 /// Render a pre-parsed AST with data. Use this for better performance when
@@ -144,6 +153,7 @@ pub fn parse(allocator: Allocator, source: []const u8) !*Node {
 /// AST string values are slices into normalized_source, so it must stay alive.
 /// Caller must call result.deinit(allocator) when done.
 pub fn parseWithSource(allocator: Allocator, source: []const u8) !ParseResult {
+    // Note: Cannot use ArenaAllocator here since returned AST must outlive function scope
     // Lex
     var lex = pug.lexer.Lexer.init(allocator, source, .{}) catch return error.OutOfMemory;
     errdefer lex.deinit();
