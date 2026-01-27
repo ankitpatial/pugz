@@ -8,7 +8,7 @@ pub fn main() !void {
 
     // Test: Simple include from test_views
     var engine = pugz.ViewEngine.init(allocator, .{
-        .views_dir = "test_views",
+        .views_dir = "tests/sample/01",
     }) catch |err| {
         std.debug.print("Init Error: {}\n", .{err});
         return err;
