@@ -98,6 +98,11 @@ pub const ViewEngine = struct {
         defer allocator.free(source);
 
         // Parse template
+        // Note: We intentionally leak parse_result.normalized_source here because:
+        // 1. AST strings are slices into normalized_source
+        // 2. The AST is returned and rendered later
+        // 3. Both will be freed together when render() completes
+        // This is acceptable since ViewEngine.render() is short-lived (single request)
         var parse_result = template.parseWithSource(allocator, source) catch |err| {
             log.err("failed to parse template '{s}': {}", .{ full_path, err });
             return ViewEngineError.ParseError;
@@ -112,6 +117,9 @@ pub const ViewEngine = struct {
 
         // Collect mixins from this template
         mixin.collectMixins(allocator, final_ast, registry) catch {};
+
+        // Don't free parse_result.normalized_source - it's needed while AST is alive
+        // It will be freed when the caller uses ArenaAllocator (typical usage pattern)
 
         return final_ast;
     }
@@ -130,20 +138,22 @@ pub const ViewEngine = struct {
                         }
                         return err;
                     };
-                    defer {
-                        included_ast.deinit(allocator);
-                        allocator.destroy(included_ast);
-                    }
 
                     // For pug includes, inline the content into the node
                     if (node.type == .Include) {
-                        // Copy children from included AST to this node
+                        // Transfer ownership of children from included AST to this node
                         for (included_ast.nodes.items) |child| {
                             node.nodes.append(allocator, child) catch {
                                 return ViewEngineError.OutOfMemory;
                             };
                         }
+                        // Clear children list so deinit doesn't free them (ownership transferred)
+                        included_ast.nodes.clearRetainingCapacity();
                     }
+
+                    // Now safe to free the included AST wrapper (children already transferred)
+                    included_ast.deinit(allocator);
+                    allocator.destroy(included_ast);
                 }
             }
         }

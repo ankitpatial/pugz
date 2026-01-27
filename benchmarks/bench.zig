@@ -1,7 +1,8 @@
 //! Pugz Benchmark - Template Rendering
 //!
-//! This benchmark parses templates ONCE, then renders 2000 times.
-//! This matches how Pug.js benchmark works (compile once, render many).
+//! Two benchmark modes:
+//! 1. Cached AST: Parse once, render 2000 times (matches Pug.js behavior)
+//! 2. No Cache: Parse + render on every iteration
 //!
 //! Run: zig build bench
 
@@ -58,15 +59,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    std.debug.print("\n", .{});
-    std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
-    std.debug.print("║   Pugz Benchmark ({d} iterations, parse once)                 ║\n", .{iterations});
-    std.debug.print("║   Templates: {s}/*.pug                           ║\n", .{templates_dir});
-    std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
-
     // Load JSON data
-    std.debug.print("\nLoading JSON data and parsing templates...\n", .{});
-
     var data_arena = std.heap.ArenaAllocator.init(allocator);
     defer data_arena.deinit();
     const data_alloc = data_arena.allocator();
@@ -96,7 +89,7 @@ pub fn main() !void {
     const search = try loadJson(struct { searchRecords: []const SearchRecord }, data_alloc, "search-results.json");
     const friends_data = try loadJson(struct { friends: []const Friend }, data_alloc, "friends.json");
 
-    // Load and PARSE templates ONCE (like Pug.js compiles once)
+    // Load template sources
     const simple0_tpl = try loadTemplate(data_alloc, "simple-0.pug");
     const simple1_tpl = try loadTemplate(data_alloc, "simple-1.pug");
     const simple2_tpl = try loadTemplate(data_alloc, "simple-2.pug");
@@ -105,7 +98,17 @@ pub fn main() !void {
     const search_tpl = try loadTemplate(data_alloc, "search-results.pug");
     const friends_tpl = try loadTemplate(data_alloc, "friends.pug");
 
-    // Parse templates once
+    // ═══════════════════════════════════════════════════════════════════════
+    // Benchmark 1: Cached AST (parse once, render many)
+    // ═══════════════════════════════════════════════════════════════════════
+    std.debug.print("\n", .{});
+    std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
+    std.debug.print("║   Pugz Benchmark - CACHED AST ({d} iterations)               ║\n", .{iterations});
+    std.debug.print("║   Mode: Parse once, render many (like Pug.js)                 ║\n", .{});
+    std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
+
+    std.debug.print("\nParsing templates...\n", .{});
+
     const simple0_ast = try pugz.template.parse(data_alloc, simple0_tpl);
     const simple1_ast = try pugz.template.parse(data_alloc, simple1_tpl);
     const simple2_ast = try pugz.template.parse(data_alloc, simple2_tpl);
@@ -114,20 +117,57 @@ pub fn main() !void {
     const search_ast = try pugz.template.parse(data_alloc, search_tpl);
     const friends_ast = try pugz.template.parse(data_alloc, friends_tpl);
 
-    std.debug.print("Loaded. Starting benchmark (render only)...\n\n", .{});
+    std.debug.print("Starting benchmark (render only)...\n\n", .{});
 
-    var total: f64 = 0;
-
-    total += try bench("simple-0", allocator, simple0_ast, simple0);
-    total += try bench("simple-1", allocator, simple1_ast, simple1);
-    total += try bench("simple-2", allocator, simple2_ast, simple2);
-    total += try bench("if-expression", allocator, if_expr_ast, if_expr);
-    total += try bench("projects-escaped", allocator, projects_ast, projects);
-    total += try bench("search-results", allocator, search_ast, search);
-    total += try bench("friends", allocator, friends_ast, friends_data);
+    var total_cached: f64 = 0;
+    total_cached += try benchCached("simple-0", allocator, simple0_ast, simple0);
+    total_cached += try benchCached("simple-1", allocator, simple1_ast, simple1);
+    total_cached += try benchCached("simple-2", allocator, simple2_ast, simple2);
+    total_cached += try benchCached("if-expression", allocator, if_expr_ast, if_expr);
+    total_cached += try benchCached("projects-escaped", allocator, projects_ast, projects);
+    total_cached += try benchCached("search-results", allocator, search_ast, search);
+    total_cached += try benchCached("friends", allocator, friends_ast, friends_data);
 
     std.debug.print("\n", .{});
-    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ "TOTAL", total });
+    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ "TOTAL (cached)", total_cached });
+    std.debug.print("\n", .{});
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Benchmark 2: No Cache (parse + render every time)
+    // ═══════════════════════════════════════════════════════════════════════
+    std.debug.print("\n", .{});
+    std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
+    std.debug.print("║   Pugz Benchmark - NO CACHE ({d} iterations)                 ║\n", .{iterations});
+    std.debug.print("║   Mode: Parse + render every iteration                        ║\n", .{});
+    std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
+
+    std.debug.print("\nStarting benchmark (parse + render)...\n\n", .{});
+
+    var total_nocache: f64 = 0;
+    total_nocache += try benchNoCache("simple-0", allocator, simple0_tpl, simple0);
+    total_nocache += try benchNoCache("simple-1", allocator, simple1_tpl, simple1);
+    total_nocache += try benchNoCache("simple-2", allocator, simple2_tpl, simple2);
+    total_nocache += try benchNoCache("if-expression", allocator, if_expr_tpl, if_expr);
+    total_nocache += try benchNoCache("projects-escaped", allocator, projects_tpl, projects);
+    total_nocache += try benchNoCache("search-results", allocator, search_tpl, search);
+    total_nocache += try benchNoCache("friends", allocator, friends_tpl, friends_data);
+
+    std.debug.print("\n", .{});
+    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ "TOTAL (no cache)", total_nocache });
+    std.debug.print("\n", .{});
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Summary
+    // ═══════════════════════════════════════════════════════════════════════
+    std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
+    std.debug.print("║   SUMMARY                                                      ║\n", .{});
+    std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
+    std.debug.print("  Cached AST (render only):  {d:>7.1}ms\n", .{total_cached});
+    std.debug.print("  No Cache (parse+render):   {d:>7.1}ms\n", .{total_nocache});
+    std.debug.print("  Parse overhead:            {d:>7.1}ms ({d:.1}%)\n", .{
+        total_nocache - total_cached,
+        ((total_nocache - total_cached) / total_nocache) * 100.0,
+    });
     std.debug.print("\n", .{});
 }
 
@@ -143,7 +183,8 @@ fn loadTemplate(alloc: std.mem.Allocator, comptime filename: []const u8) ![]cons
     return try std.fs.cwd().readFileAlloc(alloc, path, 1 * 1024 * 1024);
 }
 
-fn bench(
+// Benchmark with cached AST (render only)
+fn benchCached(
     name: []const u8,
     allocator: std.mem.Allocator,
     ast: *pugz.parser.Node,
@@ -156,6 +197,28 @@ fn bench(
     for (0..iterations) |_| {
         _ = arena.reset(.retain_capacity);
         _ = pugz.template.renderAst(arena.allocator(), ast, data) catch |err| {
+            std.debug.print("  {s:<20} => ERROR: {}\n", .{ name, err });
+            return 0;
+        };
+    }
+    const ms = @as(f64, @floatFromInt(timer.read())) / 1_000_000.0;
+    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ name, ms });
+    return ms;
+}
+
+// Benchmark without cache (parse + render every iteration)
+fn benchNoCache(
+    name: []const u8,
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    data: anytype,
+) !f64 {
+    var timer = try std.time.Timer.start();
+    for (0..iterations) |_| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        _ = pugz.template.renderWithData(arena.allocator(), source, data) catch |err| {
             std.debug.print("  {s:<20} => ERROR: {}\n", .{ name, err });
             return 0;
         };
