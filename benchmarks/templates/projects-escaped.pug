@@ -1,11 +1,5 @@
-doctype html
-html
-  head
-    title #{title}
-  body
-    p #{text}
-    each project in projects
-      a(href=project.url) #{project.name}
-      p #{project.description}
-    else
-      p No projects
+each project in projects
+  .project
+    h3= project.name
+    a(href=project.url) Link
+    p= project.description

@@ -14,63 +14,13 @@
 
 const std = @import("std");
 const pugz = @import("pugz");
-
-/// Normalizes HTML by removing indentation/formatting whitespace.
-/// This allows comparing pretty vs non-pretty output.
-fn normalizeHtml(allocator: std.mem.Allocator, html: []const u8) ![]const u8 {
-    var result = std.ArrayListUnmanaged(u8){};
-    var i: usize = 0;
-    var in_tag = false;
-    var last_was_space = false;
-
-    while (i < html.len) {
-        const c = html[i];
-
-        if (c == '<') {
-            // Strip trailing whitespace before tags
-            while (result.items.len > 0 and (result.items[result.items.len - 1] == ' ' or result.items[result.items.len - 1] == '\t')) {
-                _ = result.pop();
-            }
-            in_tag = true;
-            last_was_space = false;
-            try result.append(allocator, c);
-        } else if (c == '>') {
-            in_tag = false;
-            last_was_space = false;
-            try result.append(allocator, c);
-        } else if (c == '\n' or c == '\r' or c == ' ' or c == '\t') {
-            // Treat all whitespace (including newlines) uniformly
-            if (in_tag) {
-                // Preserve single space in tags for attribute separation
-                if (!last_was_space) {
-                    try result.append(allocator, ' ');
-                    last_was_space = true;
-                }
-            } else {
-                // Outside tags: skip leading whitespace after >
-                if (result.items.len > 0 and result.items[result.items.len - 1] != '>') {
-                    if (!last_was_space) {
-                        try result.append(allocator, ' ');
-                        last_was_space = true;
-                    }
-                }
-            }
-            i += 1;
-            continue;
-        } else {
-            last_was_space = false;
-            try result.append(allocator, c);
-        }
-        i += 1;
-    }
-
-    return result.toOwnedSlice(allocator);
-}
+const helper = @import("helper.zig");
 
 fn runTest(comptime name: []const u8) !void {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const pug_content = @embedFile("check_list/" ++ name ++ ".pug");
@@ -82,8 +32,8 @@ fn runTest(comptime name: []const u8) !void {
     const trimmed_expected = std.mem.trimRight(u8, expected_html, " \n\r\t");
 
     // Normalize both for comparison (ignores pretty-print differences)
-    const norm_result = try normalizeHtml(alloc, trimmed_result);
-    const norm_expected = try normalizeHtml(alloc, trimmed_expected);
+    const norm_result = try helper.normalizeHtml(alloc, trimmed_result);
+    const norm_expected = try helper.normalizeHtml(alloc, trimmed_expected);
 
     try std.testing.expectEqualStrings(norm_expected, norm_result);
 }

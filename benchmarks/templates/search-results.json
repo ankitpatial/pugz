@@ -1,278 +1,36 @@
 {
   "searchRecords": [
     {
-      "imgUrl": "img1.jpg",
-      "viewItemUrl": "http://foo/1",
-      "title": "Namebox",
-      "description": "Duis laborum nostrud consectetur exercitation minim ad laborum velit adipisicing.",
+      "imgUrl": "/img1.jpg",
+      "viewItemUrl": "/item1",
+      "title": "Item 1",
+      "description": "Desc 1",
       "featured": true,
       "sizes": [
         "S",
         "M",
-        "L",
-        "XL",
-        "XXL"
+        "L"
       ]
     },
     {
-      "imgUrl": "img2.jpg",
-      "viewItemUrl": "http://foo/2",
-      "title": "Arctiq",
-      "description": "Incididunt ea mollit commodo velit officia. Enim officia occaecat nulla aute.",
-      "featured": false,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img3.jpg",
-      "viewItemUrl": "http://foo/3",
-      "title": "Niquent",
-      "description": "Aliquip Lorem consequat sunt ipsum dolor amet amet cupidatat deserunt eiusmod.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img4.jpg",
-      "viewItemUrl": "http://foo/4",
-      "title": "Remotion",
-      "description": "Est ad amet irure veniam dolore velit amet irure fugiat ut elit.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img5.jpg",
-      "viewItemUrl": "http://foo/5",
-      "title": "Octocore",
-      "description": "Sunt ex magna culpa cillum esse irure consequat Lorem aliquip enim sit.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img6.jpg",
-      "viewItemUrl": "http://foo/6",
-      "title": "Spherix",
-      "description": "Duis laborum nostrud consectetur exercitation minim ad laborum velit adipisicing.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img7.jpg",
-      "viewItemUrl": "http://foo/7",
-      "title": "Quarex",
-      "description": "Incididunt ea mollit commodo velit officia. Enim officia occaecat nulla aute.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img8.jpg",
-      "viewItemUrl": "http://foo/8",
-      "title": "Supremia",
-      "description": "Aliquip Lorem consequat sunt ipsum dolor amet amet cupidatat deserunt eiusmod.",
-      "featured": false,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img9.jpg",
-      "viewItemUrl": "http://foo/9",
-      "title": "Amtap",
-      "description": "Est ad amet irure veniam dolore velit amet irure fugiat ut elit.",
-      "featured": false,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img10.jpg",
-      "viewItemUrl": "http://foo/10",
-      "title": "Qiao",
-      "description": "Sunt ex magna culpa cillum esse irure consequat Lorem aliquip enim sit.",
-      "featured": false,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img11.jpg",
-      "viewItemUrl": "http://foo/11",
-      "title": "Pushcart",
-      "description": "Duis laborum nostrud consectetur exercitation minim ad laborum velit adipisicing.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img12.jpg",
-      "viewItemUrl": "http://foo/12",
-      "title": "Eweville",
-      "description": "Incididunt ea mollit commodo velit officia. Enim officia occaecat nulla aute.",
-      "featured": false,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img13.jpg",
-      "viewItemUrl": "http://foo/13",
-      "title": "Senmei",
-      "description": "Aliquip Lorem consequat sunt ipsum dolor amet amet cupidatat deserunt eiusmod.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img14.jpg",
-      "viewItemUrl": "http://foo/14",
-      "title": "Maximind",
-      "description": "Est ad amet irure veniam dolore velit amet irure fugiat ut elit.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img15.jpg",
-      "viewItemUrl": "http://foo/15",
-      "title": "Blurrybus",
-      "description": "Sunt ex magna culpa cillum esse irure consequat Lorem aliquip enim sit.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img16.jpg",
-      "viewItemUrl": "http://foo/16",
-      "title": "Virva",
-      "description": "Duis laborum nostrud consectetur exercitation minim ad laborum velit adipisicing.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img17.jpg",
-      "viewItemUrl": "http://foo/17",
-      "title": "Centregy",
-      "description": "Incididunt ea mollit commodo velit officia. Enim officia occaecat nulla aute.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img18.jpg",
-      "viewItemUrl": "http://foo/18",
-      "title": "Dancerity",
-      "description": "Aliquip Lorem consequat sunt ipsum dolor amet amet cupidatat deserunt eiusmod.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img19.jpg",
-      "viewItemUrl": "http://foo/19",
-      "title": "Oceanica",
-      "description": "Est ad amet irure veniam dolore velit amet irure fugiat ut elit.",
-      "featured": true,
-      "sizes": [
-        "S",
-        "M",
-        "L",
-        "XL",
-        "XXL"
-      ]
-    },
-    {
-      "imgUrl": "img20.jpg",
-      "viewItemUrl": "http://foo/20",
-      "title": "Synkgen",
-      "description": "Sunt ex magna culpa cillum esse irure consequat Lorem aliquip enim sit.",
+      "imgUrl": "/img2.jpg",
+      "viewItemUrl": "/item2",
+      "title": "Item 2",
+      "description": "Desc 2",
       "featured": false,
       "sizes": null
+    },
+    {
+      "imgUrl": "/img3.jpg",
+      "viewItemUrl": "/item3",
+      "title": "Item 3",
+      "description": "Desc 3",
+      "featured": true,
+      "sizes": [
+        "M",
+        "L",
+        "XL"
+      ]
     }
   ]
 }

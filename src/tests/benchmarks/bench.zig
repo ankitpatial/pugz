@@ -1,15 +1,18 @@
 //! Pugz Benchmark - Template Rendering
 //!
-//! Two benchmark modes:
-//! 1. Cached AST: Parse once, render 2000 times (matches Pug.js behavior)
+//! Three benchmark modes (best of 5 runs each):
+//! 1. Cached AST: Parse once, render many times (matches Pug.js behavior)
 //! 2. No Cache: Parse + render on every iteration
+//! 3. Compiled: Pre-compiled templates to Zig code (zero parse overhead)
 //!
 //! Run: zig build bench
 
 const std = @import("std");
 const pugz = @import("pugz");
+const compiled = @import("bench_compiled");
 
 const iterations: usize = 2000;
+const runs: usize = 5; // Best of 5
 const templates_dir = "benchmarks/templates";
 
 // Data structures matching JSON files
@@ -103,7 +106,7 @@ pub fn main() !void {
     // ═══════════════════════════════════════════════════════════════════════
     std.debug.print("\n", .{});
     std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
-    std.debug.print("║   Pugz Benchmark - CACHED AST ({d} iterations)               ║\n", .{iterations});
+    std.debug.print("║   Pugz Benchmark - CACHED AST ({d} iterations, best of {d})      ║\n", .{ iterations, runs });
     std.debug.print("║   Mode: Parse once, render many (like Pug.js)                 ║\n", .{});
     std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
 
@@ -137,7 +140,7 @@ pub fn main() !void {
     // ═══════════════════════════════════════════════════════════════════════
     std.debug.print("\n", .{});
     std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
-    std.debug.print("║   Pugz Benchmark - NO CACHE ({d} iterations)                 ║\n", .{iterations});
+    std.debug.print("║   Pugz Benchmark - NO CACHE ({d} iterations, best of {d})        ║\n", .{ iterations, runs });
     std.debug.print("║   Mode: Parse + render every iteration                        ║\n", .{});
     std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
 
@@ -157,6 +160,30 @@ pub fn main() !void {
     std.debug.print("\n", .{});
 
     // ═══════════════════════════════════════════════════════════════════════
+    // Benchmark 3: Compiled Templates (zero parse overhead)
+    // ═══════════════════════════════════════════════════════════════════════
+    std.debug.print("\n", .{});
+    std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
+    std.debug.print("║   Pugz Benchmark - COMPILED ({d} iterations, best of {d})        ║\n", .{ iterations, runs });
+    std.debug.print("║   Mode: Pre-compiled .pug → .zig (no parse overhead)          ║\n", .{});
+    std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
+
+    std.debug.print("\nStarting benchmark (compiled templates)...\n\n", .{});
+
+    var total_compiled: f64 = 0;
+    total_compiled += try benchCompiled("simple-0", allocator, compiled.simple_0);
+    total_compiled += try benchCompiled("simple-1", allocator, compiled.simple_1);
+    total_compiled += try benchCompiled("simple-2", allocator, compiled.simple_2);
+    total_compiled += try benchCompiled("if-expression", allocator, compiled.if_expression);
+    total_compiled += try benchCompiled("projects-escaped", allocator, compiled.projects_escaped);
+    total_compiled += try benchCompiled("search-results", allocator, compiled.search_results);
+    total_compiled += try benchCompiled("friends", allocator, compiled.friends);
+
+    std.debug.print("\n", .{});
+    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ "TOTAL (compiled)", total_compiled });
+    std.debug.print("\n", .{});
+
+    // ═══════════════════════════════════════════════════════════════════════
     // Summary
     // ═══════════════════════════════════════════════════════════════════════
     std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
@@ -164,10 +191,20 @@ pub fn main() !void {
     std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
     std.debug.print("  Cached AST (render only):  {d:>7.1}ms\n", .{total_cached});
     std.debug.print("  No Cache (parse+render):   {d:>7.1}ms\n", .{total_nocache});
+    if (total_compiled > 0) {
+        std.debug.print("  Compiled (zero parse):     {d:>7.1}ms\n", .{total_compiled});
+    }
+    std.debug.print("\n", .{});
     std.debug.print("  Parse overhead:            {d:>7.1}ms ({d:.1}%)\n", .{
         total_nocache - total_cached,
         ((total_nocache - total_cached) / total_nocache) * 100.0,
     });
+    if (total_compiled > 0) {
+        std.debug.print("  Cached vs Compiled:        {d:>7.1}ms ({d:.1}x faster)\n", .{
+            total_cached - total_compiled,
+            total_cached / total_compiled,
+        });
+    }
     std.debug.print("\n", .{});
 }
 
@@ -183,7 +220,7 @@ fn loadTemplate(alloc: std.mem.Allocator, comptime filename: []const u8) ![]cons
     return try std.fs.cwd().readFileAlloc(alloc, path, 1 * 1024 * 1024);
 }
 
-// Benchmark with cached AST (render only)
+// Benchmark with cached AST (render only) - Best of 5 runs
 fn benchCached(
     name: []const u8,
     allocator: std.mem.Allocator,
@@ -193,37 +230,79 @@ fn benchCached(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var timer = try std.time.Timer.start();
-    for (0..iterations) |_| {
+    var best_ms: f64 = std.math.inf(f64);
+
+    for (0..runs) |_| {
         _ = arena.reset(.retain_capacity);
-        _ = pugz.template.renderAst(arena.allocator(), ast, data) catch |err| {
-            std.debug.print("  {s:<20} => ERROR: {}\n", .{ name, err });
-            return 0;
-        };
+        var timer = try std.time.Timer.start();
+        for (0..iterations) |_| {
+            _ = arena.reset(.retain_capacity);
+            _ = pugz.template.renderAst(arena.allocator(), ast, data) catch |err| {
+                std.debug.print("  {s:<20} => ERROR: {}\n", .{ name, err });
+                return 0;
+            };
+        }
+        const ms = @as(f64, @floatFromInt(timer.read())) / 1_000_000.0;
+        if (ms < best_ms) best_ms = ms;
     }
-    const ms = @as(f64, @floatFromInt(timer.read())) / 1_000_000.0;
-    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ name, ms });
-    return ms;
+
+    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ name, best_ms });
+    return best_ms;
 }
 
-// Benchmark without cache (parse + render every iteration)
+// Benchmark without cache (parse + render every iteration) - Best of 5 runs
 fn benchNoCache(
     name: []const u8,
     allocator: std.mem.Allocator,
     source: []const u8,
     data: anytype,
 ) !f64 {
-    var timer = try std.time.Timer.start();
-    for (0..iterations) |_| {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
+    var best_ms: f64 = std.math.inf(f64);
 
-        _ = pugz.template.renderWithData(arena.allocator(), source, data) catch |err| {
-            std.debug.print("  {s:<20} => ERROR: {}\n", .{ name, err });
-            return 0;
-        };
+    for (0..runs) |_| {
+        var timer = try std.time.Timer.start();
+        for (0..iterations) |_| {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+
+            _ = pugz.template.renderWithData(arena.allocator(), source, data) catch |err| {
+                std.debug.print("  {s:<20} => ERROR: {}\n", .{ name, err });
+                return 0;
+            };
+        }
+        const ms = @as(f64, @floatFromInt(timer.read())) / 1_000_000.0;
+        if (ms < best_ms) best_ms = ms;
     }
-    const ms = @as(f64, @floatFromInt(timer.read())) / 1_000_000.0;
-    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ name, ms });
-    return ms;
+
+    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ name, best_ms });
+    return best_ms;
+}
+
+// Benchmark compiled templates (zero parse overhead) - Best of 5 runs
+fn benchCompiled(
+    name: []const u8,
+    allocator: std.mem.Allocator,
+    comptime tpl: type,
+) !f64 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var best_ms: f64 = std.math.inf(f64);
+
+    for (0..runs) |_| {
+        _ = arena.reset(.retain_capacity);
+        var timer = try std.time.Timer.start();
+        for (0..iterations) |_| {
+            _ = arena.reset(.retain_capacity);
+            _ = tpl.render(arena.allocator(), .{}) catch |err| {
+                std.debug.print("  {s:<20} => ERROR: {}\n", .{ name, err });
+                return 0;
+            };
+        }
+        const ms = @as(f64, @floatFromInt(timer.read())) / 1_000_000.0;
+        if (ms < best_ms) best_ms = ms;
+    }
+
+    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ name, best_ms });
+    return best_ms;
 }

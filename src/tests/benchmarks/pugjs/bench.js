@@ -49,15 +49,16 @@ for (const name of benchmarks) {
 console.log("Templates compiled. Starting benchmark...\n");
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Benchmark
+// Benchmark (Best of 5 runs)
 // ═══════════════════════════════════════════════════════════════════════════
 
 console.log("╔═══════════════════════════════════════════════════════════════╗");
-console.log(`║        Pug.js Benchmark (${iterations} iterations)                    ║`);
+console.log(`║        Pug.js Benchmark (${iterations} iterations, best of 5)         ║`);
 console.log("║        Templates: benchmarks/templates/*.pug                   ║");
 console.log("║        Data:      benchmarks/templates/*.json                 ║");
 console.log("╚═══════════════════════════════════════════════════════════════╝");
 
+const runs = 5;
 let total = 0;
 
 for (const name of benchmarks) {
@@ -69,16 +70,20 @@ for (const name of benchmarks) {
     compiledFn(templateData);
   }
 
-  // Benchmark
-  const start = process.hrtime.bigint();
-  for (let i = 0; i < iterations; i++) {
-    compiledFn(templateData);
+  // Run 5 times and take best
+  let bestMs = Infinity;
+  for (let run = 0; run < runs; run++) {
+    const start = process.hrtime.bigint();
+    for (let i = 0; i < iterations; i++) {
+      compiledFn(templateData);
+    }
+    const end = process.hrtime.bigint();
+    const ms = Number(end - start) / 1_000_000;
+    if (ms < bestMs) bestMs = ms;
   }
-  const end = process.hrtime.bigint();
 
-  const ms = Number(end - start) / 1_000_000;
-  total += ms;
-  console.log(`  ${name.padEnd(20)} => ${ms.toFixed(1).padStart(7)}ms`);
+  total += bestMs;
+  console.log(`  ${name.padEnd(20)} => ${bestMs.toFixed(1).padStart(7)}ms`);
 }
 
 console.log("");

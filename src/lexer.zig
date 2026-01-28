@@ -131,6 +131,7 @@ pub const Token = struct {
     key: TokenValue = .none, // string for each
     code: TokenValue = .none, // string for each/eachOf
     name: TokenValue = .none, // string for attribute
+    quoted: TokenValue = .none, // boolean for attribute values (true if originally quoted)
 
     /// Helper to get val as string
     pub fn getVal(self: Token) ?[]const u8 {
@@ -145,6 +146,11 @@ pub const Token = struct {
     /// Helper to check if must_escape is true
     pub fn shouldEscape(self: Token) bool {
         return self.must_escape.getBool() orelse true;
+    }
+
+    /// Helper to check if value was originally quoted
+    pub fn isQuoted(self: Token) bool {
+        return self.quoted.getBool() orelse false;
     }
 
     /// Helper to get mode as string
@@ -2182,8 +2188,21 @@ pub const Lexer = struct {
                     i += 1;
                 }
 
-                attr_token.val = TokenValue.fromString(str[val_start..i]);
+                // Strip outer quotes from attribute value if present
+                var val_str = str[val_start..i];
+                var was_quoted = false;
+                if (val_str.len >= 2) {
+                    const first = val_str[0];
+                    const last = val_str[val_str.len - 1];
+                    if ((first == '"' and last == '"') or (first == '\'' and last == '\'')) {
+                        val_str = val_str[1 .. val_str.len - 1];
+                        was_quoted = true;
+                    }
+                }
+
+                attr_token.val = TokenValue.fromString(val_str);
                 attr_token.must_escape = TokenValue.fromBool(must_escape);
+                attr_token.quoted = TokenValue.fromBool(was_quoted);
             } else {
                 // Boolean attribute
                 attr_token.val = TokenValue.fromBool(true);

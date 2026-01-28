@@ -85,6 +85,7 @@ pub const Attribute = struct {
     filename: ?[]const u8,
     must_escape: bool,
     val_owned: bool = false, // true if val was allocated and needs to be freed
+    quoted: bool = false, // true if val was originally quoted (static string)
 };
 
 pub const AttributeBlock = struct {
@@ -1425,14 +1426,9 @@ pub const Parser = struct {
                         }
                         try attribute_names.append(self.allocator, "id");
                     }
-                    // Create quoted value
+                    // Class/id values from shorthand are always static strings
                     const val_str = tok.val.getString() orelse "";
-                    var quoted_val = std.ArrayListUnmanaged(u8){};
-                    defer quoted_val.deinit(self.allocator);
-                    try quoted_val.append(self.allocator, '\'');
-                    try quoted_val.appendSlice(self.allocator, val_str);
-                    try quoted_val.append(self.allocator, '\'');
-                    const final_val = try self.allocator.dupe(u8, quoted_val.items);
+                    const final_val = try self.allocator.dupe(u8, val_str);
 
                     try tag.attrs.append(self.allocator, .{
                         .name = if (tok.type == .id) "id" else "class",
@@ -1442,6 +1438,7 @@ pub const Parser = struct {
                         .filename = self.filename,
                         .must_escape = false,
                         .val_owned = true, // We allocated this string
+                        .quoted = true, // Shorthand class/id are always static
                     });
                 },
                 .start_attributes => {
@@ -1573,6 +1570,7 @@ pub const Parser = struct {
                 .column = tok.loc.start.column,
                 .filename = self.filename,
                 .must_escape = tok.shouldEscape(),
+                .quoted = tok.isQuoted(),
             });
             tok = self.advance();
         }

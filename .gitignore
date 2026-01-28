@@ -5,6 +5,7 @@ zig-cache/
 .pugz-cache/
 .claude
 node_modules
+generated
 
 # compiled template file
 generated.zig

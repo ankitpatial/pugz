@@ -14,6 +14,10 @@ const pugz = @import("pugz");
 
 const Allocator = std.mem.Allocator;
 
+// Mode selection: set to true to use compiled templates
+// Run `zig build compile-templates` to generate templates first
+const USE_COMPILED_TEMPLATES = true;
+
 // ============================================================================
 // Data Types
 // ============================================================================
@@ -164,6 +168,15 @@ const sample_cart_items = [_]CartItem{
         .total = "79.99",
     },
     .{
+        .id = "2",
+        .name = "Laptop",
+        .price = "500.00",
+        .image = "/images/keyboard.jpg",
+        .variant = "BLK",
+        .quantity = "1",
+        .total = "500.00",
+    },
+    .{
         .id = "5",
         .name = "Mechanical Keyboard",
         .price = "129.99",
@@ -224,11 +237,19 @@ const App = struct {
 // ============================================================================
 
 fn home(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(res.arena, "pages/home", .{
+    const html = if (USE_COMPILED_TEMPLATES) blk: {
+        const templates = @import("templates");
+        break :blk try templates.pages_home.render(res.arena, .{
+            .title = "Home",
+            .cartCount = "2",
+            .authenticated = true,
+            .items = sample_products,
+        });
+    } else app.view.render(res.arena, "pages/home", .{
         .title = "Home",
         .cartCount = "2",
         .authenticated = true,
-        .items = &[_][]const u8{ "Wireless Headphones", "Smart Watch", "Laptop Stand", "USB-C Hub" },
+        .items = sample_products,
     }) catch |err| {
         return renderError(res, err);
     };
@@ -238,7 +259,14 @@ fn home(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
 }
 
 fn products(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(res.arena, "pages/products", .{
+    const html = if (USE_COMPILED_TEMPLATES) blk: {
+        const templates = @import("templates");
+        break :blk try templates.pages_products.render(res.arena, .{
+            .title = "All Products",
+            .cartCount = "2",
+            .productCount = "6",
+        });
+    } else app.view.render(res.arena, "pages/products", .{
         .title = "All Products",
         .cartCount = "2",
         .productCount = "6",
@@ -254,7 +282,17 @@ fn productDetail(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
     const id = req.param("id") orelse "1";
     _ = id;
 
-    const html = app.view.render(res.arena, "pages/product-detail", .{
+    const html = if (USE_COMPILED_TEMPLATES) blk: {
+        const templates = @import("templates");
+        break :blk try templates.pages_product_detail.render(res.arena, .{
+            .cartCount = "2",
+            .productName = "Wireless Headphones",
+            .category = "Electronics",
+            .price = "79.99",
+            .description = "Premium wireless headphones with active noise cancellation. Experience crystal-clear audio whether you're working, traveling, or relaxing at home.",
+            .sku = "WH-001-BLK",
+        });
+    } else app.view.render(res.arena, "pages/product-detail", .{
         .cartCount = "2",
         .productName = "Wireless Headphones",
         .category = "Electronics",
@@ -270,7 +308,16 @@ fn productDetail(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
 }
 
 fn cart(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(res.arena, "pages/cart", .{
+    const html = if (USE_COMPILED_TEMPLATES) blk: {
+        const templates = @import("templates");
+        break :blk try templates.pages_cart.render(res.arena, .{
+            .cartCount = "2",
+            .subtotal = sample_cart.subtotal,
+            .tax = sample_cart.tax,
+            .total = sample_cart.total,
+            .cartItems = &sample_cart_items,
+        });
+    } else app.view.render(res.arena, "pages/cart", .{
         .title = "Shopping Cart",
         .cartCount = "2",
         .cartItems = &sample_cart_items,
@@ -287,7 +334,13 @@ fn cart(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
 }
 
 fn about(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(res.arena, "pages/about", .{
+    const html = if (USE_COMPILED_TEMPLATES) blk: {
+        const templates = @import("templates");
+        break :blk try templates.pages_about.render(res.arena, .{
+            .title = "About",
+            .cartCount = "2",
+        });
+    } else app.view.render(res.arena, "pages/about", .{
         .title = "About",
         .cartCount = "2",
     }) catch |err| {
@@ -299,7 +352,12 @@ fn about(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
 }
 
 fn includeDemo(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
-    const html = app.view.render(res.arena, "pages/include-demo", .{
+    const html = if (USE_COMPILED_TEMPLATES) blk: {
+        const templates = @import("templates");
+        break :blk try templates.pages_include_demo.render(res.arena, .{
+            .cartCount = "2",
+        });
+    } else app.view.render(res.arena, "pages/include-demo", .{
         .title = "Include Demo",
         .cartCount = "2",
     }) catch |err| {
@@ -310,10 +368,39 @@ fn includeDemo(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
     res.body = html;
 }
 
+fn simpleCompiled(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
+    if (USE_COMPILED_TEMPLATES) {
+        const templates = @import("templates");
+        const html = try templates.pages_simple.render(res.arena, .{
+            .title = "Compiled Template Demo",
+            .heading = "Hello from Compiled Templates!",
+            .siteName = "Pugz Demo",
+        });
+        res.content_type = .HTML;
+        res.body = html;
+    } else {
+        const html = app.view.render(res.arena, "pages/simple", .{
+            .title = "Simple Page",
+            .heading = "Hello from Runtime Templates!",
+            .siteName = "Pugz Demo",
+        }) catch |err| {
+            return renderError(res, err);
+        };
+        res.content_type = .HTML;
+        res.body = html;
+    }
+}
+
 fn notFound(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
     res.status = 404;
 
-    const html = app.view.render(res.arena, "pages/404", .{
+    const html = if (USE_COMPILED_TEMPLATES) blk: {
+        const templates = @import("templates");
+        break :blk try templates.pages_404.render(res.arena, .{
+            .title = "Page Not Found",
+            .cartCount = "2",
+        });
+    } else app.view.render(res.arena, "pages/404", .{
         .title = "Page Not Found",
         .cartCount = "2",
     }) catch |err| {
@@ -399,6 +486,7 @@ pub fn main() !void {
     router.get("/cart", cart, .{});
     router.get("/about", about, .{});
     router.get("/include-demo", includeDemo, .{});
+    router.get("/simple", simpleCompiled, .{});
 
     // Static files
     router.get("/css/*", serveStatic, .{});
@@ -421,6 +509,7 @@ pub fn main() !void {
         \\   GET /cart          - Shopping cart
         \\   GET /about         - About page
         \\   GET /include-demo  - Include directive demo
+        \\   GET /simple        - Simple compiled template demo
         \\
         \\ Press Ctrl+C to stop.
         \\

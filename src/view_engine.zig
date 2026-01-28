@@ -83,9 +83,15 @@ pub const ViewEngine = struct {
     }
 
     /// Parse a template and process includes recursively
-    fn parseWithIncludes(self: *ViewEngine, allocator: std.mem.Allocator, template_path: []const u8, registry: *MixinRegistry) !*Node {
+    pub fn parseWithIncludes(self: *ViewEngine, allocator: std.mem.Allocator, template_path: []const u8, registry: *MixinRegistry) !*Node {
         // Build full path (relative to views_dir)
-        const full_path = try self.resolvePath(allocator, template_path);
+        const full_path = self.resolvePath(allocator, template_path) catch |err| {
+            log.debug("failed to resolve path '{s}': {}", .{ template_path, err });
+            return switch (err) {
+                error.PathEscapesRoot => ViewEngineError.PathEscapesRoot,
+                else => ViewEngineError.ReadError,
+            };
+        };
         defer allocator.free(full_path);
 
         // Read template file
@@ -125,7 +131,7 @@ pub const ViewEngine = struct {
     }
 
     /// Process all include statements in the AST
-    fn processIncludes(self: *ViewEngine, allocator: std.mem.Allocator, node: *Node, registry: *MixinRegistry) ViewEngineError!void {
+    pub fn processIncludes(self: *ViewEngine, allocator: std.mem.Allocator, node: *Node, registry: *MixinRegistry) ViewEngineError!void {
         // Process Include nodes - load the file and inline its content
         if (node.type == .Include or node.type == .RawInclude) {
             if (node.file) |file| {
@@ -165,7 +171,7 @@ pub const ViewEngine = struct {
     }
 
     /// Process extends statement - loads parent template and merges blocks
-    fn processExtends(self: *ViewEngine, allocator: std.mem.Allocator, ast: *Node, registry: *MixinRegistry) ViewEngineError!*Node {
+    pub fn processExtends(self: *ViewEngine, allocator: std.mem.Allocator, ast: *Node, registry: *MixinRegistry) ViewEngineError!*Node {
         if (ast.nodes.items.len == 0) return ast;
 
         // Check if first node is Extends
@@ -250,18 +256,56 @@ pub const ViewEngine = struct {
     /// Resolves a template path relative to views directory.
     /// Rejects paths that escape the views root (e.g., "../etc/passwd").
     fn resolvePath(self: *const ViewEngine, allocator: std.mem.Allocator, template_path: []const u8) ![]const u8 {
-        // Security: reject paths that escape root
-        if (!load.isPathSafe(template_path)) {
-            return ViewEngineError.PathEscapesRoot;
-        }
+        log.debug("resolvePath: template_path='{s}', views_dir='{s}'", .{ template_path, self.options.views_dir });
 
+        // Add extension if not present
         const with_ext = if (std.mem.endsWith(u8, template_path, self.options.extension))
             try allocator.dupe(u8, template_path)
         else
             try std.fmt.allocPrint(allocator, "{s}{s}", .{ template_path, self.options.extension });
         defer allocator.free(with_ext);
 
-        return std.fs.path.join(allocator, &.{ self.options.views_dir, with_ext });
+        // Join with views_dir to get full path
+        const full_path = try std.fs.path.join(allocator, &.{ self.options.views_dir, with_ext });
+        defer allocator.free(full_path);
+
+        // Get absolute paths for security check
+        const abs_views_dir = std.fs.cwd().realpathAlloc(allocator, self.options.views_dir) catch {
+            return ViewEngineError.ReadError;
+        };
+        defer allocator.free(abs_views_dir);
+
+        // Resolve the full template path to absolute
+        const abs_template_path = std.fs.cwd().realpathAlloc(allocator, full_path) catch {
+            // File might not exist yet, or path may be invalid
+            // In this case, manually construct the absolute path
+            const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch {
+                return ViewEngineError.ReadError;
+            };
+            defer allocator.free(cwd);
+
+            const resolved = std.fs.path.resolve(allocator, &.{ cwd, full_path }) catch {
+                return ViewEngineError.OutOfMemory;
+            };
+
+            // Check if resolved path is within views_dir
+            log.debug("Security check: '{s}' vs '{s}'", .{ resolved, abs_views_dir });
+            if (!std.mem.startsWith(u8, resolved, abs_views_dir)) {
+                log.warn("Path '{s}' (from template '{s}') escapes views_dir '{s}'", .{ resolved, template_path, abs_views_dir });
+                allocator.free(resolved);
+                return ViewEngineError.PathEscapesRoot;
+            }
+
+            return resolved;
+        };
+
+        // File exists - check if it's within views_dir
+        if (!std.mem.startsWith(u8, abs_template_path, abs_views_dir)) {
+            allocator.free(abs_template_path);
+            return ViewEngineError.PathEscapesRoot;
+        }
+
+        return abs_template_path;
     }
 };
 

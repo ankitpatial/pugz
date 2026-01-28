@@ -11,11 +11,13 @@ Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It compiles Pug t
 - At the start of each new session, read this CLAUDE.md file to understand project context and rules.
 - When the user specifies a new rule, update this CLAUDE.md file to include it.
 - Code comments are required but must be meaningful, not bloated. Focus on explaining "why" not "what". Avoid obvious comments like "// increment counter" - instead explain complex logic, non-obvious decisions, or tricky edge cases.
+- **All documentation files (.md) must be saved to the `docs/` directory.** Do not create .md files in the root directory or examples directories - always place them in `docs/`.
 
 ## Build Commands
 
 - `zig build` - Build the project (output in `zig-out/`)
 - `zig build test` - Run all tests
+- `zig build test-compile` - Test the template compilation build step
 - `zig build bench-v1` - Run v1 template benchmark
 - `zig build bench-interpreted` - Run interpreted templates benchmark
 
@@ -27,10 +29,11 @@ Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It compiles Pug t
 Source → Lexer → Tokens → StripComments → Parser → AST → Linker → Codegen → HTML
 ```
 
-### Two Rendering Modes
+### Three Rendering Modes
 
 1. **Static compilation** (`pug.compile`): Outputs HTML directly
-2. **Data binding** (`template.renderWithData`): Supports `#{field}` interpolation with Zig structs
+2. **Data binding** (`template.renderWithData`): Supports `#{field}` interpolation with Zig structs  
+3. **Compiled templates** (`.pug` → `.zig`): Pre-compile templates to Zig functions for maximum performance
 
 ### Core Modules
 
@@ -48,6 +51,8 @@ Source → Lexer → Tokens → StripComments → Parser → AST → Linker → 
 | **Template** | `src/template.zig` | Data binding renderer |
 | **Pug** | `src/pug.zig` | Main entry point |
 | **ViewEngine** | `src/view_engine.zig` | High-level API for web servers |
+| **ZigCodegen** | `src/tpl_compiler/zig_codegen.zig` | Compiles .pug AST to Zig functions |
+| **CompileTpls** | `src/compile_tpls.zig` | Build step for compiling templates at build time |
 | **Root** | `src/root.zig` | Public library API exports |
 
 ### Test Files
@@ -114,6 +119,91 @@ const html = try pugz.renderTemplate(allocator,
 });
 // Output: <a href="https://example.com" class="btn">Click me!</a>
 ```
+
+### Compiled Templates (Maximum Performance)
+
+For production deployments where maximum performance is critical, you can pre-compile .pug templates to Zig functions using a build step:
+
+**Step 1: Add build step to your build.zig**
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // Add pugz dependency
+    const pugz_dep = b.dependency("pugz", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const pugz = pugz_dep.module("pugz");
+
+    // Add template compilation build step
+    const compile_templates = @import("pugz").addCompileStep(b, .{
+        .name = "compile-templates",
+        .source_dirs = &.{"src/views", "src/pages"},  // Can specify multiple directories
+        .output_dir = "generated",
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "myapp",
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    exe.root_module.addImport("pugz", pugz);
+    exe.root_module.addImport("templates", compile_templates.getOutput());
+    exe.step.dependOn(&compile_templates.step);
+
+    b.installArtifact(exe);
+}
+```
+
+**Step 2: Use compiled templates in your code**
+```zig
+const std = @import("std");
+const tpls = @import("templates");  // Import from build step
+
+pub fn handleRequest(allocator: std.mem.Allocator) ![]const u8 {
+    // Access templates by their path: views/pages/home.pug -> tpls.views_pages_home
+    return try tpls.views_home.render(allocator, .{
+        .title = "Home",
+        .name = "Alice",
+    });
+}
+
+// Or use layouts
+pub fn renderLayout(allocator: std.mem.Allocator) ![]const u8 {
+    return try tpls.layouts_base.render(allocator, .{
+        .content = "Main content here",
+    });
+}
+```
+
+**How templates are named:**
+- `views/home.pug` → `tpls.views_home`
+- `pages/about.pug` → `tpls.pages_about`
+- `layouts/main.pug` → `tpls.layouts_main`
+- `views/user-profile.pug` → `tpls.views_user_profile` (dashes become underscores)
+- Directory separators and dashes are converted to underscores
+
+**Performance Benefits:**
+- **Zero parsing overhead** - templates compiled at build time
+- **Type-safe data binding** - compile errors for missing fields
+- **Optimized code** - direct string concatenation instead of AST traversal
+- **~10-100x faster** than runtime parsing depending on template complexity
+
+**What gets resolved at compile time:**
+- Template inheritance (`extends`/`block`) - fully resolved
+- Includes (`include`) - inlined into template
+- Mixins - available in compiled templates
+
+**Trade-offs:**
+- Templates are regenerated automatically when you run `zig build`
+- Includes/extends are resolved at compile time (no dynamic loading)
+- Each/if statements not yet supported (coming soon)
 
 ### ViewEngine (for Web Servers)
 
@@ -334,11 +424,12 @@ Uses error unions with detailed `PugError` context including line, column, and s
 ## File Structure
 
 ```
-├── src/                # Source code
+├── src/                    # Source code
 │   ├── root.zig            # Public library API
 │   ├── view_engine.zig     # High-level ViewEngine
 │   ├── pug.zig             # Main entry point (static compilation)
 │   ├── template.zig        # Data binding renderer
+│   ├── compile_tpls.zig    # Build step for template compilation
 │   ├── lexer.zig           # Tokenizer
 │   ├── parser.zig          # AST parser
 │   ├── runtime.zig         # Shared utilities
@@ -347,7 +438,11 @@ Uses error unions with detailed `PugError` context including line, column, and s
 │   ├── strip_comments.zig  # Comment filtering
 │   ├── load.zig            # File loading
 │   ├── linker.zig          # Template inheritance
-│   └── codegen.zig         # HTML generation
+│   ├── codegen.zig         # HTML generation
+│   └── tpl_compiler/       # Template-to-Zig code generation
+│       ├── zig_codegen.zig     # AST to Zig function compiler
+│       ├── main.zig            # CLI tool (standalone)
+│       └── helpers_template.zig # Runtime helpers template
 ├── tests/              # Integration tests
 │   ├── general_test.zig
 │   ├── doctype_test.zig

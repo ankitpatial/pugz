@@ -1,24 +1,52 @@
 const std = @import("std");
+pub const compile_tpls = @import("src/compile_tpls.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Main pugz module
     const mod = b.addModule("pugz", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // Creates an executable that will run `test` blocks from the provided module.
+    // ============================================================================
+    // CLI Tool - Pug Template Compiler
+    // ============================================================================
+    const cli_exe = b.addExecutable(.{
+        .name = "pug-compile",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pugz", .module = mod },
+            },
+        }),
+    });
+    b.installArtifact(cli_exe);
+
+    // CLI run step for manual testing
+    const run_cli = b.addRunArtifact(cli_exe);
+    if (b.args) |args| {
+        run_cli.addArgs(args);
+    }
+    const cli_step = b.step("cli", "Run the pug-compile CLI tool");
+    cli_step.dependOn(&run_cli.step);
+
+    // ============================================================================
+    // Tests
+    // ============================================================================
+
+    // Module tests (from root.zig)
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
-
-    // A run step that will run the test executable.
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
-    // Source file unit tests (lexer, parser, runtime, etc.)
+    // Source file unit tests
     const source_files_with_tests = [_][]const u8{
         "src/lexer.zig",
         "src/parser.zig",
@@ -44,10 +72,10 @@ pub fn build(b: *std.Build) void {
         source_test_steps[i] = b.addRunArtifact(file_tests);
     }
 
-    // Integration tests - general template tests
-    const general_tests = b.addTest(.{
+    // Integration tests
+    const test_all = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/general_test.zig"),
+            .root_source_file = b.path("src/tests/root.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -55,51 +83,15 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    const run_general_tests = b.addRunArtifact(general_tests);
+    const run_test_all = b.addRunArtifact(test_all);
 
-    // Integration tests - doctype tests
-    const doctype_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/doctype_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "pugz", .module = mod },
-            },
-        }),
-    });
-    const run_doctype_tests = b.addRunArtifact(doctype_tests);
-
-    // Integration tests - check_list tests (pug files vs expected html output)
-    const check_list_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/check_list_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "pugz", .module = mod },
-            },
-        }),
-    });
-    const run_check_list_tests = b.addRunArtifact(check_list_tests);
-
-    // A top level step for running all tests.
+    // Test steps
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_general_tests.step);
-    test_step.dependOn(&run_doctype_tests.step);
-    test_step.dependOn(&run_check_list_tests.step);
-    // Add source file tests
+    test_step.dependOn(&run_test_all.step);
     for (&source_test_steps) |step| {
         test_step.dependOn(&step.step);
     }
-
-    // Individual test steps
-    const test_general_step = b.step("test-general", "Run general template tests");
-    test_general_step.dependOn(&run_general_tests.step);
-
-    const test_doctype_step = b.step("test-doctype", "Run doctype tests");
-    test_doctype_step.dependOn(&run_doctype_tests.step);
 
     const test_unit_step = b.step("test-unit", "Run unit tests (lexer, parser, etc.)");
     test_unit_step.dependOn(&run_mod_tests.step);
@@ -107,18 +99,29 @@ pub fn build(b: *std.Build) void {
         test_unit_step.dependOn(&step.step);
     }
 
-    const test_check_list_step = b.step("test-check-list", "Run check_list template tests");
-    test_check_list_step.dependOn(&run_check_list_tests.step);
+    const test_integration_step = b.step("test-integration", "Run integration tests");
+    test_integration_step.dependOn(&run_test_all.step);
 
-    // Benchmark executable
+    // ============================================================================
+    // Benchmarks
+    // ============================================================================
+
+    // Create module for compiled benchmark templates
+    const bench_compiled_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/compiled/root.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+
     const bench_exe = b.addExecutable(.{
         .name = "bench",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("benchmarks/bench.zig"),
+            .root_source_file = b.path("src/tests/benchmarks/bench.zig"),
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
                 .{ .name = "pugz", .module = mod },
+                .{ .name = "bench_compiled", .module = bench_compiled_mod },
             },
         }),
     });
@@ -126,14 +129,50 @@ pub fn build(b: *std.Build) void {
 
     const run_bench = b.addRunArtifact(bench_exe);
     run_bench.setCwd(b.path("."));
-    const bench_step = b.step("bench", "Run benchmark");
+    const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&run_bench.step);
 
-    // Test includes example
+    // ============================================================================
+    // Examples
+    // ============================================================================
+
+    // Example: Using compiled templates (only if generated/ exists)
+    const generated_exists = blk: {
+        var f = std.fs.cwd().openDir("generated", .{}) catch break :blk false;
+        f.close();
+        break :blk true;
+    };
+
+    if (generated_exists) {
+        const generated_mod = b.addModule("generated", .{
+            .root_source_file = b.path("generated/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        const example_compiled = b.addExecutable(.{
+            .name = "example-compiled",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("examples/use_compiled_templates.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "generated", .module = generated_mod },
+                },
+            }),
+        });
+        b.installArtifact(example_compiled);
+
+        const run_example_compiled = b.addRunArtifact(example_compiled);
+        const example_compiled_step = b.step("example-compiled", "Run compiled templates example");
+        example_compiled_step.dependOn(&run_example_compiled.step);
+    }
+
+    // Example: Test includes
     const test_includes_exe = b.addExecutable(.{
         .name = "test-includes",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/test_includes.zig"),
+            .root_source_file = b.path("src/tests/run/test_includes.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -144,7 +183,26 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(test_includes_exe);
 
     const run_test_includes = b.addRunArtifact(test_includes_exe);
-    run_test_includes.setCwd(b.path("."));
-    const test_includes_step = b.step("test-includes", "Test include/mixin rendering");
+    const test_includes_step = b.step("test-includes", "Run includes example");
     test_includes_step.dependOn(&run_test_includes.step);
+
+    // Add template compile test
+    addTemplateCompileTest(b);
+}
+
+// Public API for other build.zig files to use
+pub fn addCompileStep(b: *std.Build, options: compile_tpls.CompileOptions) *compile_tpls.CompileStep {
+    return compile_tpls.addCompileStep(b, options);
+}
+
+// Test the compile step
+fn addTemplateCompileTest(b: *std.Build) void {
+    const compile_step = addCompileStep(b, .{
+        .name = "compile-test-templates",
+        .source_dirs = &.{"examples/cli-templates-demo"},
+        .output_dir = "zig-out/generated-test",
+    });
+
+    const test_compile = b.step("test-compile", "Test template compilation build step");
+    test_compile.dependOn(&compile_step.step);
 }

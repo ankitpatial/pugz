@@ -579,3 +579,22 @@ test "evaluateStringConcat - basic" {
     defer allocator.free(result2);
     try std.testing.expectEqualStrings("btn btn-primary", result2);
 }
+
+test "bindArguments - with default value in param" {
+    const allocator = std.testing.allocator;
+
+    var bindings = std.StringHashMapUnmanaged([]const u8){};
+    defer bindings.deinit(allocator);
+
+    // This is how it appears: params have default, args are the call args
+    try bindArguments(allocator, "text, type=\"primary\"", "\"Click Me\", \"primary\"", &bindings);
+
+    std.debug.print("\nBindings:\n", .{});
+    var iter = bindings.iterator();
+    while (iter.next()) |entry| {
+        std.debug.print("  {s} = '{s}'\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+    }
+
+    try std.testing.expectEqualStrings("Click Me", bindings.get("text").?);
+    try std.testing.expectEqualStrings("primary", bindings.get("type").?);
+}

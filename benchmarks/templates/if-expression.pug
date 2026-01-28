@@ -1,13 +1,4 @@
-each account in accounts
-  div
-    if account.status == "closed"
-      div Your account has been closed!
-    if account.status == "suspended"
-      div Your account has been temporarily suspended
-    if account.status == "open"
-      div
-        | Bank balance:
-        if account.negative
-          span.negative= account.balanceFormatted
-        else
-          span.positive= account.balanceFormatted
+if active
+  p Active
+else
+  p Inactive

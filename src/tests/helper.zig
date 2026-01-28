@@ -6,7 +6,7 @@ const pugz = @import("pugz");
 
 /// Normalizes HTML by removing indentation/formatting whitespace.
 /// This allows comparing pretty vs non-pretty output.
-fn normalizeHtml(allocator: std.mem.Allocator, html: []const u8) ![]const u8 {
+pub fn normalizeHtml(allocator: std.mem.Allocator, html: []const u8) ![]const u8 {
     var result = std.ArrayListUnmanaged(u8){};
     var i: usize = 0;
     var in_tag = false;
