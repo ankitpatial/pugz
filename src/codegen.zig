@@ -269,7 +269,7 @@ pub const Compiler = struct {
             .While => try self.visitWhile(node),
             .Each => try self.visitEach(node),
             .EachOf => try self.visitEachOf(node),
-            .YieldBlock => {}, // No-op
+            .YieldBlock, .TypeHint => {}, // No-op (TypeHint is only for compiled templates)
             .Include, .Extends, .RawInclude, .Filter, .IncludeFilter, .FileReference, .AttributeBlock => {
                 // These should be processed by linker/loader before codegen
                 return error.UnsupportedNodeType;

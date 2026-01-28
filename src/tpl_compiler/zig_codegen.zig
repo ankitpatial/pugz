@@ -29,6 +29,20 @@ pub const ZigCodegenError = error{
     UnsupportedFeature,
 };
 
+/// Type information parsed from @TypeOf annotations
+pub const TypeInfo = struct {
+    is_array: bool = false,
+    struct_fields: ?std.StringHashMap([]const u8) = null,
+    primitive_type: ?[]const u8 = null,
+
+    pub fn deinit(self: *TypeInfo, allocator: Allocator) void {
+        if (self.struct_fields) |*fields| {
+            fields.deinit();
+        }
+        _ = allocator;
+    }
+};
+
 pub const Codegen = struct {
     allocator: Allocator,
     output: std.ArrayListUnmanaged(u8),
@@ -36,6 +50,10 @@ pub const Codegen = struct {
     terse: bool, // HTML5 mode vs XHTML
     // Buffer for combining consecutive static strings
     static_buffer: std.ArrayListUnmanaged(u8),
+    // Type hints from @TypeOf annotations
+    type_hints: std.StringHashMap(TypeInfo),
+    // Current loop variable for field resolution inside each blocks
+    current_loop_var: ?[]const u8 = null,
 
     pub fn init(allocator: Allocator) Codegen {
         return .{
@@ -44,12 +62,22 @@ pub const Codegen = struct {
             .indent_level = 0,
             .terse = true, // Default to HTML5
             .static_buffer = .{},
+            .type_hints = std.StringHashMap(TypeInfo).init(allocator),
+            .current_loop_var = null,
         };
     }
 
     pub fn deinit(self: *Codegen) void {
         self.output.deinit(self.allocator);
         self.static_buffer.deinit(self.allocator);
+        // Clean up type hints
+        var iter = self.type_hints.valueIterator();
+        while (iter.next()) |info| {
+            if (info.struct_fields) |*fields| {
+                fields.deinit();
+            }
+        }
+        self.type_hints.deinit();
     }
 
     /// Generate Zig code for a template
@@ -59,6 +87,19 @@ pub const Codegen = struct {
         self.static_buffer.clearRetainingCapacity();
         self.indent_level = 0;
         self.terse = true;
+        self.current_loop_var = null;
+
+        // Clean up any existing type hints
+        var hint_iter = self.type_hints.valueIterator();
+        while (hint_iter.next()) |info| {
+            if (info.struct_fields) |*sf| {
+                sf.deinit();
+            }
+        }
+        self.type_hints.clearRetainingCapacity();
+
+        // Collect type hints from AST
+        try collectTypeHints(self.allocator, ast, &self.type_hints);
 
         // Detect doctype to set terse mode
         self.detectDoctype(ast);
@@ -68,14 +109,23 @@ pub const Codegen = struct {
         try self.writeLine("const helpers = @import(\"helpers.zig\");");
         try self.writeLine("");
 
-        // Generate Data struct
+        // Generate Data struct with typed fields
         try self.writeIndent();
         try self.writeLine("pub const Data = struct {");
         self.indent_level += 1;
+
         for (fields) |field| {
             try self.writeIndent();
             try self.write(field);
-            try self.writeLine(": []const u8 = \"\",");
+
+            // Check if we have a type hint for this field
+            if (self.type_hints.get(field)) |type_info| {
+                try self.write(": ");
+                try self.writeTypeInfo(type_info);
+            } else {
+                try self.write(": []const u8 = \"\"");
+            }
+            try self.writeLine(",");
         }
         self.indent_level -= 1;
         try self.writeIndent();
@@ -135,6 +185,8 @@ pub const Codegen = struct {
             .BlockComment => try self.generateBlockComment(node),
             .Doctype => try self.generateDoctype(node),
             .Conditional => try self.generateConditional(node),
+            .Each, .EachOf => try self.generateEach(node),
+            .TypeHint => {}, // Skip - processed during field extraction
             else => {
                 // Unsupported nodes: skip or process children
                 for (node.nodes.items) |child| {
@@ -203,14 +255,27 @@ pub const Codegen = struct {
                         try self.write(attr.name);
                         try self.writeLine("=\\\"\");");
 
+                        // Check if this is a loop variable reference or typed field
+                        const is_loop_var = self.isLoopVariableReference(val);
+                        const needs_value_helper = is_loop_var or self.hasNonStringTypeHint(val);
+
                         try self.writeIndent();
-                        if (attr.must_escape) {
+                        if (needs_value_helper) {
+                            // Use appendValue for typed fields (handles any type)
+                            try self.write("try helpers.appendValue(&buf, allocator, ");
+                            if (is_loop_var) {
+                                try self.writeFieldReference(val);
+                            } else {
+                                try self.write("data.");
+                                try self.writeSanitizedFieldName(val);
+                            }
+                        } else if (attr.must_escape) {
                             try self.write("try helpers.appendEscaped(&buf, allocator, data.");
+                            try self.writeSanitizedFieldName(val);
                         } else {
                             try self.write("try buf.appendSlice(allocator, data.");
+                            try self.writeSanitizedFieldName(val);
                         }
-                        // Sanitize field name
-                        try self.writeSanitizedFieldName(val);
                         try self.writeLine(");");
 
                         try self.writeIndent();
@@ -285,15 +350,43 @@ pub const Codegen = struct {
                     // Output interpolated field
                     const field_name = val[start..end];
                     try self.writeIndent();
+
+                    // Check if this is a loop variable reference (e.g., item.name)
+                    const is_loop_var = self.isLoopVariableReference(field_name);
+                    // Check if the field has a non-string type hint
+                    const needs_value_helper = is_loop_var or self.hasNonStringTypeHint(field_name);
+
                     if (text_node.buffer) {
                         // Escaped (default)
-                        try self.write("try helpers.appendEscaped(&buf, allocator, data.");
+                        if (needs_value_helper) {
+                            // Use appendValue for typed fields (handles any type)
+                            try self.write("try helpers.appendValue(&buf, allocator, ");
+                            if (is_loop_var) {
+                                try self.writeFieldReference(field_name);
+                            } else {
+                                try self.write("data.");
+                                try self.writeSanitizedFieldName(field_name);
+                            }
+                        } else {
+                            try self.write("try helpers.appendEscaped(&buf, allocator, data.");
+                            try self.writeSanitizedFieldName(field_name);
+                        }
                     } else {
                         // Unescaped (unsafe)
-                        try self.write("try buf.appendSlice(allocator, data.");
+                        if (needs_value_helper) {
+                            // Use appendValue for typed fields (handles any type)
+                            try self.write("try helpers.appendValue(&buf, allocator, ");
+                            if (is_loop_var) {
+                                try self.writeFieldReference(field_name);
+                            } else {
+                                try self.write("data.");
+                                try self.writeSanitizedFieldName(field_name);
+                            }
+                        } else {
+                            try self.write("try buf.appendSlice(allocator, data.");
+                            try self.writeSanitizedFieldName(field_name);
+                        }
                     }
-                    // Sanitize field name (replace dots with underscores)
-                    try self.writeSanitizedFieldName(field_name);
                     try self.writeLine(");");
 
                     i = end + 1;
@@ -318,14 +411,27 @@ pub const Codegen = struct {
             // Flush static buffer before dynamic content
             try self.flushStaticBuffer();
 
+            // Check if this is a loop variable reference
+            const is_loop_var = self.isLoopVariableReference(val);
+            const needs_value_helper = is_loop_var or self.hasNonStringTypeHint(val);
+
             try self.writeIndent();
-            if (code_node.must_escape) {
+            if (needs_value_helper) {
+                // Use appendValue for typed fields (handles any type)
+                try self.write("try helpers.appendValue(&buf, allocator, ");
+                if (is_loop_var) {
+                    try self.writeFieldReference(val);
+                } else {
+                    try self.write("data.");
+                    try self.writeSanitizedFieldName(val);
+                }
+            } else if (code_node.must_escape) {
                 try self.write("try helpers.appendEscaped(&buf, allocator, data.");
+                try self.writeSanitizedFieldName(val);
             } else {
                 try self.write("try buf.appendSlice(allocator, data.");
+                try self.writeSanitizedFieldName(val);
             }
-            // Sanitize field name
-            try self.writeSanitizedFieldName(val);
             try self.writeLine(");");
         }
         // Unbuffered code is not supported in static compilation
@@ -363,6 +469,40 @@ pub const Codegen = struct {
             try self.addStatic(val);
             try self.addStatic(">");
         }
+    }
+
+    fn generateEach(self: *Codegen, node: *Node) !void {
+        const collection = node.obj orelse return;
+        const item_var = node.val orelse "item";
+
+        // Flush static content before loop
+        try self.flushStaticBuffer();
+
+        // Generate: for (data.collection) |item| {
+        try self.writeIndent();
+        try self.write("for (data.");
+        try self.writeSanitizedFieldName(collection);
+        try self.write(") |");
+        try self.write(item_var);
+        try self.writeLine("| {");
+        self.indent_level += 1;
+
+        // Track loop variable for field resolution
+        const prev_loop_var = self.current_loop_var;
+        self.current_loop_var = item_var;
+
+        // Generate loop body
+        for (node.nodes.items) |child| {
+            try self.generateNode(child);
+        }
+
+        // Flush any remaining static content
+        try self.flushStaticBuffer();
+
+        self.current_loop_var = prev_loop_var;
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.writeLine("}");
     }
 
     fn generateConditional(self: *Codegen, cond: *Node) !void {
@@ -519,6 +659,113 @@ pub const Codegen = struct {
         }
     }
 
+    /// Check if field_name is a loop variable reference (e.g., "item" or "item.name" when current_loop_var is "item")
+    fn isLoopVariableReference(self: *Codegen, field_name: []const u8) bool {
+        const loop_var = self.current_loop_var orelse return false;
+        // Exact match (e.g., "item" when loop var is "item")
+        if (std.mem.eql(u8, field_name, loop_var)) return true;
+        // Field access (e.g., "item.name" when loop var is "item")
+        if (field_name.len > loop_var.len and
+            std.mem.startsWith(u8, field_name, loop_var) and
+            field_name[loop_var.len] == '.')
+        {
+            return true;
+        }
+        return false;
+    }
+
+    /// Check if a field has a non-string type hint (requires helpers.appendValue)
+    fn hasNonStringTypeHint(self: *Codegen, field_name: []const u8) bool {
+        const type_info = self.type_hints.get(field_name) orelse return false;
+
+        // Arrays always need appendValue
+        if (type_info.is_array) return true;
+
+        // Structs need appendValue
+        if (type_info.struct_fields != null) return true;
+
+        // Check primitive type
+        if (type_info.primitive_type) |prim| {
+            // String types don't need appendValue
+            if (std.mem.eql(u8, prim, "[]const u8")) return false;
+            // All other primitives (f32, i32, bool, etc.) need appendValue
+            return true;
+        }
+
+        return false;
+    }
+
+    /// Write a field reference, handling loop variables (item.name -> item.name) vs data fields (field -> data.field)
+    fn writeFieldReference(self: *Codegen, field_name: []const u8) !void {
+        // For loop variable references, write directly (e.g., "item.name")
+        try self.write(field_name);
+    }
+
+    /// Write type information to output (generates Zig type syntax with default value)
+    fn writeTypeInfo(self: *Codegen, type_info: TypeInfo) !void {
+        if (type_info.is_array) {
+            // Array type: []const struct { ... } = &.{}
+            if (type_info.struct_fields) |struct_fields| {
+                try self.write("[]const struct { ");
+                var iter = struct_fields.iterator();
+                var first = true;
+                while (iter.next()) |entry| {
+                    if (!first) {
+                        try self.write(", ");
+                    }
+                    first = false;
+                    try self.write(entry.key_ptr.*);
+                    try self.write(": ");
+                    try self.write(entry.value_ptr.*);
+                }
+                try self.write(" } = &.{}");
+            } else if (type_info.primitive_type) |prim| {
+                // Array of primitives: []const u8, []i32, etc.
+                try self.write("[]const ");
+                try self.write(prim);
+                try self.write(" = &.{}");
+            } else {
+                // Fallback: array of strings
+                try self.write("[]const []const u8 = &.{}");
+            }
+        } else {
+            // Non-array type
+            if (type_info.struct_fields) |struct_fields| {
+                // Anonymous struct
+                try self.write("struct { ");
+                var iter = struct_fields.iterator();
+                var first = true;
+                while (iter.next()) |entry| {
+                    if (!first) {
+                        try self.write(", ");
+                    }
+                    first = false;
+                    try self.write(entry.key_ptr.*);
+                    try self.write(": ");
+                    try self.write(entry.value_ptr.*);
+                }
+                try self.write(" } = .{}");
+            } else if (type_info.primitive_type) |prim| {
+                // Primitive type with appropriate default
+                try self.write(prim);
+                if (std.mem.eql(u8, prim, "[]const u8")) {
+                    try self.write(" = \"\"");
+                } else if (std.mem.eql(u8, prim, "bool")) {
+                    try self.write(" = false");
+                } else if (std.mem.startsWith(u8, prim, "i") or std.mem.startsWith(u8, prim, "u")) {
+                    try self.write(" = 0");
+                } else if (std.mem.startsWith(u8, prim, "f")) {
+                    try self.write(" = 0.0");
+                } else {
+                    // Unknown type, no default
+                }
+            } else {
+                // Fallback: string
+                try self.write("[]const u8 = \"\"");
+            }
+        }
+    }
+
     /// Check if value is a data field reference (simple identifier, may contain dots)
     fn isDataFieldReference(self: *Codegen, val: []const u8) bool {
         _ = self;
@@ -550,7 +797,10 @@ pub fn extractFieldNames(allocator: Allocator, ast: *Node) ![][]const u8 {
     var fields = std.StringHashMap(void).init(allocator);
     defer fields.deinit();
 
-    try extractFieldNamesRecursive(ast, &fields);
+    var loop_vars = std.StringHashMap(void).init(allocator);
+    defer loop_vars.deinit();
+
+    try extractFieldNamesRecursive(ast, &fields, &loop_vars);
 
     // Convert to sorted slice and sanitize field names
     var result: std.ArrayListUnmanaged([]const u8) = .{};
@@ -583,7 +833,38 @@ pub fn extractFieldNames(allocator: Allocator, ast: *Node) ![][]const u8 {
     return slice;
 }
 
-fn extractFieldNamesRecursive(node: *Node, fields: *std.StringHashMap(void)) !void {
+fn extractFieldNamesRecursive(node: *Node, fields: *std.StringHashMap(void), loop_vars: *std.StringHashMap(void)) !void {
+    // Handle TypeHint nodes - just add the field name, type info is handled separately
+    if (node.type == .TypeHint) {
+        if (node.type_hint_field) |field| {
+            try fields.put(field, {});
+        }
+        return;
+    }
+
+    // Handle Each/EachOf nodes - extract collection field and track loop variable
+    if (node.type == .Each or node.type == .EachOf) {
+        if (node.obj) |collection| {
+            const trimmed = std.mem.trim(u8, collection, " \t");
+            if (trimmed.len > 0) {
+                try fields.put(trimmed, {});
+            }
+        }
+
+        // Track the loop variable (e.g., "item" in "each item in items")
+        const loop_var = node.val orelse "item";
+        try loop_vars.put(loop_var, {});
+
+        // Recurse into loop body
+        for (node.nodes.items) |child| {
+            try extractFieldNamesRecursive(child, fields, loop_vars);
+        }
+
+        // Remove loop variable after processing (for nested loops with same var name)
+        _ = loop_vars.remove(loop_var);
+        return;
+    }
+
     // Extract from text interpolations: #{field}
     if (node.type == .Text or node.type == .Code) {
         if (node.val) |val| {
@@ -597,7 +878,10 @@ fn extractFieldNamesRecursive(node: *Node, fields: *std.StringHashMap(void)) !vo
 
                     if (end < val.len) {
                         const field_name = val[start..end];
-                        try fields.put(field_name, {});
+                        // Skip if it's a loop variable reference
+                        if (!isLoopVarReference(field_name, loop_vars)) {
+                            try fields.put(field_name, {});
+                        }
                         i = end + 1;
                         continue;
                     }
@@ -607,7 +891,10 @@ fn extractFieldNamesRecursive(node: *Node, fields: *std.StringHashMap(void)) !vo
 
             // For Code nodes with buffer=true, the val itself is a field reference
             if (node.type == .Code and node.buffer) {
-                try fields.put(val, {});
+                // Skip if it's a loop variable reference
+                if (!isLoopVarReference(val, loop_vars)) {
+                    try fields.put(val, {});
+                }
             }
         }
     }
@@ -632,7 +919,8 @@ fn extractFieldNamesRecursive(node: *Node, fields: *std.StringHashMap(void)) !vo
                             }
                         }
                     }
-                    if (is_identifier) {
+                    // Skip if it's a loop variable reference
+                    if (is_identifier and !isLoopVarReference(val, loop_vars)) {
                         try fields.put(val, {});
                     }
                 }
@@ -660,7 +948,8 @@ fn extractFieldNamesRecursive(node: *Node, fields: *std.StringHashMap(void)) !vo
                         }
                     }
                 }
-                if (is_identifier) {
+                // Skip if it's a loop variable reference
+                if (is_identifier and !isLoopVarReference(field_name, loop_vars)) {
                     try fields.put(field_name, {});
                 }
             }
@@ -668,16 +957,114 @@ fn extractFieldNamesRecursive(node: *Node, fields: *std.StringHashMap(void)) !vo
 
         // Recurse into consequent and alternate
         if (node.consequent) |cons| {
-            try extractFieldNamesRecursive(cons, fields);
+            try extractFieldNamesRecursive(cons, fields, loop_vars);
         }
         if (node.alternate) |alt| {
-            try extractFieldNamesRecursive(alt, fields);
+            try extractFieldNamesRecursive(alt, fields, loop_vars);
         }
     }
 
     // Recurse into children
     for (node.nodes.items) |child| {
-        try extractFieldNamesRecursive(child, fields);
+        try extractFieldNamesRecursive(child, fields, loop_vars);
+    }
+}
+
+/// Check if a field name is a loop variable reference (e.g., "item" or "item.name")
+fn isLoopVarReference(field_name: []const u8, loop_vars: *std.StringHashMap(void)) bool {
+    // Check exact match (e.g., "item")
+    if (loop_vars.contains(field_name)) return true;
+
+    // Check field access (e.g., "item.name" -> check "item")
+    if (std.mem.indexOf(u8, field_name, ".")) |dot_idx| {
+        const base = field_name[0..dot_idx];
+        if (loop_vars.contains(base)) return true;
+    }
+
+    return false;
+}
+
+// ============================================================================
+// Type Hint Parsing
+// ============================================================================
+
+/// Parse a type spec string (e.g., "[]{name: []const u8, price: f32}")
+pub fn parseTypeHintSpec(allocator: Allocator, spec: []const u8) !TypeInfo {
+    var info = TypeInfo{};
+    var remaining = std.mem.trim(u8, spec, " \t");
+
+    // Check for array prefix []
+    if (std.mem.startsWith(u8, remaining, "[]")) {
+        info.is_array = true;
+        remaining = remaining[2..];
+    }
+
+    // Check for struct definition {...}
+    if (remaining.len > 0 and remaining[0] == '{') {
+        info.struct_fields = try parseStructFields(allocator, remaining);
+    } else {
+        info.primitive_type = remaining;
+    }
+
+    return info;
+}
+
+/// Parse struct fields from "{field1: type1, field2: type2}"
+fn parseStructFields(allocator: Allocator, spec: []const u8) !std.StringHashMap([]const u8) {
+    var fields = std.StringHashMap([]const u8).init(allocator);
+    errdefer fields.deinit();
+
+    // Remove braces
+    if (spec.len < 2) return fields;
+    const inner = spec[1 .. spec.len - 1];
+
+    // Split by comma and parse each field
+    var iter = std.mem.splitSequence(u8, inner, ",");
+    while (iter.next()) |field_spec| {
+        const trimmed = std.mem.trim(u8, field_spec, " \t");
+        if (trimmed.len == 0) continue;
+
+        // Find colon separator
+        if (std.mem.indexOf(u8, trimmed, ":")) |colon_idx| {
+            const field_name = std.mem.trim(u8, trimmed[0..colon_idx], " \t");
+            const field_type = std.mem.trim(u8, trimmed[colon_idx + 1 ..], " \t");
+            try fields.put(field_name, field_type);
+        }
+    }
+
+    return fields;
+}
+
+/// Collect type hints from an AST into a hash map
+pub fn collectTypeHints(allocator: Allocator, ast: *Node, type_hints: *std.StringHashMap(TypeInfo)) !void {
+    try collectTypeHintsRecursive(allocator, ast, type_hints);
+}
+
+fn collectTypeHintsRecursive(allocator: Allocator, node: *Node, type_hints: *std.StringHashMap(TypeInfo)) !void {
+    // Handle TypeHint nodes
+    if (node.type == .TypeHint) {
+        if (node.type_hint_field) |field| {
+            if (node.type_hint_type) |type_spec| {
+                const info = try parseTypeHintSpec(allocator, type_spec);
+                try type_hints.put(field, info);
+            }
+        }
+        return;
+    }
+
+    // Recurse into conditional branches
+    if (node.type == .Conditional) {
+        if (node.consequent) |cons| {
+            try collectTypeHintsRecursive(allocator, cons, type_hints);
+        }
+        if (node.alternate) |alt| {
+            try collectTypeHintsRecursive(allocator, alt, type_hints);
+        }
+    }
+
+    // Recurse into children
+    for (node.nodes.items) |child| {
+        try collectTypeHintsRecursive(allocator, child, type_hints);
     }
 }
 

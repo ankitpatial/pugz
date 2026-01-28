@@ -24,6 +24,8 @@ pub const StripCommentsOptions = struct {
     strip_unbuffered: bool = true,
     /// Strip buffered comments (default: false)
     strip_buffered: bool = false,
+    /// Preserve unbuffered comments starting with @TypeOf (for compiled templates)
+    preserve_type_hints: bool = true,
     /// Source filename for error messages
     filename: ?[]const u8 = null,
 };
@@ -91,8 +93,20 @@ pub fn stripComments(
                 // Check if this is a buffered comment
                 comment_is_buffered = tok.isBuffered();
 
+                // Check if this is a TypeHint comment that should be preserved
+                const is_type_hint = if (options.preserve_type_hints and !comment_is_buffered) blk2: {
+                    if (tok.val.getString()) |text| {
+                        const trimmed = std.mem.trim(u8, text, " \t");
+                        break :blk2 std.mem.startsWith(u8, trimmed, "@TypeOf(");
+                    }
+                    break :blk2 false;
+                } else false;
+
                 // Determine if we should strip this comment
-                if (comment_is_buffered) {
+                if (is_type_hint) {
+                    // Always preserve TypeHint comments
+                    in_comment = false;
+                } else if (comment_is_buffered) {
                     in_comment = options.strip_buffered;
                 } else {
                     in_comment = options.strip_unbuffered;

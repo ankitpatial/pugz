@@ -71,6 +71,7 @@ pub const NodeType = enum {
     FileReference,
     YieldBlock,
     AttributeBlock,
+    TypeHint, // Type annotation for compiled templates: //- @TypeOf(field): type
 };
 
 // ============================================================================
@@ -156,6 +157,10 @@ pub const Node = struct {
 
     // When/Conditional debug field
     debug: bool = true,
+
+    // TypeHint fields (for //- @TypeOf(field): type annotations)
+    type_hint_field: ?[]const u8 = null, // Field name (e.g., "cartItems")
+    type_hint_type: ?[]const u8 = null, // Type spec (e.g., "[]{name: []const u8}")
 
     // Memory ownership flags
     val_owned: bool = false, // true if val was allocated and needs to be freed
@@ -966,6 +971,16 @@ pub const Parser = struct {
     fn parseComment(self: *Parser) !*Node {
         const tok = try self.expect(.comment);
 
+        // Check for type hint in unbuffered comment: //- @TypeOf(field): type
+        if (!tok.isBuffered()) {
+            if (tok.val.getString()) |text| {
+                const trimmed = mem.trim(u8, text, " \t");
+                if (mem.startsWith(u8, trimmed, "@TypeOf(")) {
+                    return self.parseTypeHint(tok, trimmed);
+                }
+            }
+        }
+
         if (self.parseTextBlock()) |block| {
             const node = try self.allocator.create(Node);
             node.* = .{
@@ -995,6 +1010,66 @@ pub const Parser = struct {
             };
             return node;
         }
+    }
+
+    // ========================================================================
+    // TypeHint Parsing (for compiled templates)
+    // ========================================================================
+
+    /// Parse a type hint annotation: @TypeOf(fieldName): typeSpec
+    fn parseTypeHint(self: *Parser, tok: Token, text: []const u8) !*Node {
+        // Find closing paren: @TypeOf(fieldName)
+        const paren_start = "@TypeOf(".len;
+        var paren_end: usize = paren_start;
+        while (paren_end < text.len and text[paren_end] != ')') : (paren_end += 1) {}
+
+        if (paren_end >= text.len) {
+            // Malformed type hint - treat as regular comment
+            const node = try self.allocator.create(Node);
+            node.* = .{
+                .type = .Comment,
+                .val = tok.val.getString(),
+                .buffer = false,
+                .line = tok.loc.start.line,
+                .column = tok.loc.start.column,
+                .filename = self.filename,
+            };
+            return node;
+        }
+
+        const field_name = text[paren_start..paren_end];
+
+        // Find colon separator
+        var colon_pos = paren_end + 1;
+        while (colon_pos < text.len and (text[colon_pos] == ' ' or text[colon_pos] == '\t')) : (colon_pos += 1) {}
+
+        if (colon_pos >= text.len or text[colon_pos] != ':') {
+            // No colon found - treat as regular comment
+            const node = try self.allocator.create(Node);
+            node.* = .{
+                .type = .Comment,
+                .val = tok.val.getString(),
+                .buffer = false,
+                .line = tok.loc.start.line,
+                .column = tok.loc.start.column,
+                .filename = self.filename,
+            };
+            return node;
+        }
+
+        // Get type spec after colon
+        const type_spec = mem.trim(u8, text[colon_pos + 1 ..], " \t");
+
+        const node = try self.allocator.create(Node);
+        node.* = .{
+            .type = .TypeHint,
+            .type_hint_field = field_name,
+            .type_hint_type = type_spec,
+            .line = tok.loc.start.line,
+            .column = tok.loc.start.column,
+            .filename = self.filename,
+        };
+        return node;
     }
 
     // ========================================================================

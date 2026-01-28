@@ -55,7 +55,7 @@ const CartItem = struct {
 
 const Cart = struct {
     items: []const CartItem,
-    subtotal: []const u8,
+    subtotal: f32,
     shipping: []const u8,
     discount: ?[]const u8 = null,
     discountCode: ?[]const u8 = null,
@@ -189,7 +189,7 @@ const sample_cart_items = [_]CartItem{
 
 const sample_cart = Cart{
     .items = &sample_cart_items,
-    .subtotal = "209.98",
+    .subtotal = 209.98,
     .shipping = "0",
     .tax = "18.90",
     .total = "228.88",
@@ -309,11 +309,17 @@ fn productDetail(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
 fn cart(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
     const html = if (USE_COMPILED_TEMPLATES) blk: {
         const templates = @import("templates");
-        break :blk try templates.pages_cart.render(res.arena, .{
-            .cartCount = "2",
-            .subtotal = sample_cart.subtotal,
-            .tax = sample_cart.tax,
-            .total = sample_cart.total,
+        const Data = templates.pages_cart.Data;
+        break :blk try templates.pages_cart.render(res.arena, Data{
+            .cartCount = "3",
+            .cartItems = &.{
+                .{ .variant = "Black", .name = "Wireless Headphones", .price = 79.99, .quantity = 1, .total = 79.99 },
+                .{ .variant = "Silver", .name = "Laptop", .price = 500.00, .quantity = 1, .total = 500.00 },
+                .{ .variant = "RGB", .name = "Mechanical Keyboard", .price = 129.99, .quantity = 1, .total = 129.99 },
+            },
+            .subtotal = 709.98,
+            .tax = 63.90,
+            .total = 773.88,
         });
     } else app.view.render(res.arena, "pages/cart", .{
         .title = "Shopping Cart",

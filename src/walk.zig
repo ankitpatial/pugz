@@ -351,6 +351,7 @@ fn visitChildren(
         .MixinBlock,
         .YieldBlock,
         .Text,
+        .TypeHint,
         => {},
     }
 }

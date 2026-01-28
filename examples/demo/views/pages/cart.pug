@@ -14,17 +14,18 @@ block content
       .cart-layout
         .cart-main
           .cart-items
+            //- @TypeOf(cartItems): []{name: []const u8, variant: []const u8, price: f32, quantity: u16, total: f32}
             each item in cartItems
               .cart-item
                 .cart-item-info
-                  h3 #{name}
-                  p.text-muted #{variant}
-                  span.cart-item-price $#{price}
+                  h3 #{item.name}
+                  p.text-muted #{item.variant}
+                  span.cart-item-price $#{item.price}
                 .cart-item-qty
                   button.qty-btn -
-                  input.qty-input(type="text" value=quantity)
+                  input.qty-input(type="text" value=item.quantity)
                   button.qty-btn +
-                .cart-item-total $#{total}
+                .cart-item-total $#{item.total}
                 button.cart-item-remove x
 
           .cart-actions
@@ -34,14 +35,17 @@ block content
           h3 Order Summary
           .summary-row
             span Subtotal
+            //- @TypeOf(subtotal): f32
             span $#{subtotal}
           .summary-row
             span Shipping
             span.text-success Free
           .summary-row
             span Tax
+            //- @TypeOf(tax): f32
             span $#{tax}
           .summary-row.summary-total
             span Total
+            //- @TypeOf(total): f32
             span $#{total}
           a.btn.btn-primary.btn-block(href="/checkout") Proceed to Checkout
