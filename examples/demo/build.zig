@@ -39,27 +39,10 @@ pub fn build(b: *std.Build) void {
     // ===========================================================================
     // Main Executable
     // ===========================================================================
-    // Check if compiled templates exist
-    const has_templates = blk: {
-        var dir = std.fs.cwd().openDir("generated", .{}) catch break :blk false;
-        dir.close();
-        break :blk true;
-    };
-
-    // Build imports list
-    var imports: std.ArrayListUnmanaged(std.Build.Module.Import) = .{};
-    defer imports.deinit(b.allocator);
-
-    imports.append(b.allocator, .{ .name = "pugz", .module = pugz_mod }) catch @panic("OOM");
-    imports.append(b.allocator, .{ .name = "httpz", .module = httpz_dep.module("httpz") }) catch @panic("OOM");
-
-    // Only add templates module if they exist
-    if (has_templates) {
-        const templates_mod = b.createModule(.{
-            .root_source_file = b.path("generated/root.zig"),
-        });
-        imports.append(b.allocator, .{ .name = "templates", .module = templates_mod }) catch @panic("OOM");
-    }
+    // Templates module - uses output from compile step
+    const templates_mod = b.createModule(.{
+        .root_source_file = compile_templates.getOutput(),
+    });
 
     const exe = b.addExecutable(.{
         .name = "demo",
@@ -67,9 +50,16 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = imports.items,
+            .imports = &.{
+                .{ .name = "pugz", .module = pugz_mod },
+                .{ .name = "httpz", .module = httpz_dep.module("httpz") },
+                .{ .name = "templates", .module = templates_mod },
+            },
         }),
     });
+
+    // Ensure templates are compiled before building the executable
+    exe.step.dependOn(&compile_templates.step);
 
     b.installArtifact(exe);
 

@@ -132,7 +132,8 @@ pub fn main() !void {
     total_cached += try benchCached("friends", allocator, friends_ast, friends_data);
 
     std.debug.print("\n", .{});
-    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ "TOTAL (cached)", total_cached });
+    const t_cached = formatTime(total_cached);
+    std.debug.print("  {s:<20} => {d:>7.1}{s}\n", .{ "TOTAL (cached)", t_cached.value, t_cached.unit });
     std.debug.print("\n", .{});
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -156,7 +157,8 @@ pub fn main() !void {
     total_nocache += try benchNoCache("friends", allocator, friends_tpl, friends_data);
 
     std.debug.print("\n", .{});
-    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ "TOTAL (no cache)", total_nocache });
+    const t_nocache = formatTime(total_nocache);
+    std.debug.print("  {s:<20} => {d:>7.1}{s}\n", .{ "TOTAL (no cache)", t_nocache.value, t_nocache.unit });
     std.debug.print("\n", .{});
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -180,32 +182,48 @@ pub fn main() !void {
     total_compiled += try benchCompiled("friends", allocator, compiled.friends);
 
     std.debug.print("\n", .{});
-    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ "TOTAL (compiled)", total_compiled });
+    const t_compiled = formatTime(total_compiled);
+    std.debug.print("  {s:<20} => {d:>7.1}{s}\n", .{ "TOTAL (compiled)", t_compiled.value, t_compiled.unit });
     std.debug.print("\n", .{});
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Summary
+    // Summary (all values in ns internally, formatted for display)
     // ═══════════════════════════════════════════════════════════════════════
+    const t_cached_sum = formatTime(total_cached);
+    const t_nocache_sum = formatTime(total_nocache);
+    const t_compiled_sum = formatTime(total_compiled);
+    const t_parse_overhead = formatTime(total_nocache - total_cached);
+
     std.debug.print("╔═══════════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║   SUMMARY                                                      ║\n", .{});
     std.debug.print("╚═══════════════════════════════════════════════════════════════╝\n", .{});
-    std.debug.print("  Cached AST (render only):  {d:>7.1}ms\n", .{total_cached});
-    std.debug.print("  No Cache (parse+render):   {d:>7.1}ms\n", .{total_nocache});
+    std.debug.print("  Cached AST (render only):  {d:>7.1}{s}\n", .{ t_cached_sum.value, t_cached_sum.unit });
+    std.debug.print("  No Cache (parse+render):   {d:>7.1}{s}\n", .{ t_nocache_sum.value, t_nocache_sum.unit });
     if (total_compiled > 0) {
-        std.debug.print("  Compiled (zero parse):     {d:>7.1}ms\n", .{total_compiled});
+        std.debug.print("  Compiled (zero parse):     {d:>7.1}{s}\n", .{ t_compiled_sum.value, t_compiled_sum.unit });
     }
     std.debug.print("\n", .{});
-    std.debug.print("  Parse overhead:            {d:>7.1}ms ({d:.1}%)\n", .{
-        total_nocache - total_cached,
+    std.debug.print("  Parse overhead:            {d:>7.1}{s} ({d:.1}%)\n", .{
+        t_parse_overhead.value,
+        t_parse_overhead.unit,
         ((total_nocache - total_cached) / total_nocache) * 100.0,
     });
     if (total_compiled > 0) {
-        std.debug.print("  Cached vs Compiled:        {d:>7.1}ms ({d:.1}x faster)\n", .{
-            total_cached - total_compiled,
+        std.debug.print("  Cached vs Compiled:        {d:.0}x faster\n", .{
             total_cached / total_compiled,
         });
     }
     std.debug.print("\n", .{});
+}
+
+// Format time with automatic unit selection (µs or ms)
+fn formatTime(ns: f64) struct { value: f64, unit: []const u8 } {
+    const us = ns / 1_000.0;
+    if (us < 1000.0) {
+        return .{ .value = us, .unit = "µs" };
+    } else {
+        return .{ .value = us / 1000.0, .unit = "ms" };
+    }
 }
 
 fn loadJson(comptime T: type, alloc: std.mem.Allocator, comptime filename: []const u8) !T {
@@ -221,6 +239,7 @@ fn loadTemplate(alloc: std.mem.Allocator, comptime filename: []const u8) ![]cons
 }
 
 // Benchmark with cached AST (render only) - Best of 5 runs
+// Returns nanoseconds for consistent comparison
 fn benchCached(
     name: []const u8,
     allocator: std.mem.Allocator,
@@ -230,7 +249,7 @@ fn benchCached(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var best_ms: f64 = std.math.inf(f64);
+    var best_ns: f64 = std.math.inf(f64);
 
     for (0..runs) |_| {
         _ = arena.reset(.retain_capacity);
@@ -242,22 +261,24 @@ fn benchCached(
                 return 0;
             };
         }
-        const ms = @as(f64, @floatFromInt(timer.read())) / 1_000_000.0;
-        if (ms < best_ms) best_ms = ms;
+        const ns = @as(f64, @floatFromInt(timer.read()));
+        if (ns < best_ns) best_ns = ns;
     }
 
-    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ name, best_ms });
-    return best_ms;
+    const t = formatTime(best_ns);
+    std.debug.print("  {s:<20} => {d:>7.1}{s}\n", .{ name, t.value, t.unit });
+    return best_ns;
 }
 
 // Benchmark without cache (parse + render every iteration) - Best of 5 runs
+// Returns nanoseconds for consistent comparison
 fn benchNoCache(
     name: []const u8,
     allocator: std.mem.Allocator,
     source: []const u8,
     data: anytype,
 ) !f64 {
-    var best_ms: f64 = std.math.inf(f64);
+    var best_ns: f64 = std.math.inf(f64);
 
     for (0..runs) |_| {
         var timer = try std.time.Timer.start();
@@ -270,15 +291,17 @@ fn benchNoCache(
                 return 0;
             };
         }
-        const ms = @as(f64, @floatFromInt(timer.read())) / 1_000_000.0;
-        if (ms < best_ms) best_ms = ms;
+        const ns = @as(f64, @floatFromInt(timer.read()));
+        if (ns < best_ns) best_ns = ns;
     }
 
-    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ name, best_ms });
-    return best_ms;
+    const t = formatTime(best_ns);
+    std.debug.print("  {s:<20} => {d:>7.1}{s}\n", .{ name, t.value, t.unit });
+    return best_ns;
 }
 
 // Benchmark compiled templates (zero parse overhead) - Best of 5 runs
+// Returns nanoseconds for consistent comparison
 fn benchCompiled(
     name: []const u8,
     allocator: std.mem.Allocator,
@@ -287,7 +310,7 @@ fn benchCompiled(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var best_ms: f64 = std.math.inf(f64);
+    var best_ns: f64 = std.math.inf(f64);
 
     for (0..runs) |_| {
         _ = arena.reset(.retain_capacity);
@@ -299,10 +322,11 @@ fn benchCompiled(
                 return 0;
             };
         }
-        const ms = @as(f64, @floatFromInt(timer.read())) / 1_000_000.0;
-        if (ms < best_ms) best_ms = ms;
+        const ns = @as(f64, @floatFromInt(timer.read()));
+        if (ns < best_ns) best_ns = ns;
     }
 
-    std.debug.print("  {s:<20} => {d:>7.1}ms\n", .{ name, best_ms });
-    return best_ms;
+    const t = formatTime(best_ns);
+    std.debug.print("  {s:<20} => {d:>7.1}{s}\n", .{ name, t.value, t.unit });
+    return best_ns;
 }

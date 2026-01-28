@@ -37,7 +37,7 @@ exe.root_module.addImport("pugz", pugz_dep.module("pugz"));
 
 ## Usage
 
-### ViewEngine (Recommended)
+### ViewEngine
 
 The `ViewEngine` provides file-based template management for web servers.
 
@@ -112,6 +112,87 @@ fn handler(_: *Handler, _: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
+### Compiled Templates (Maximum Performance)
+
+For production deployments, pre-compile `.pug` templates to Zig functions at build time. This eliminates parsing overhead and provides type-safe data binding.
+
+**Step 1: Update your `build.zig`**
+
+```zig
+const std = @import("std");
+const pugz = @import("pugz");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const pugz_dep = b.dependency("pugz", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Add template compilation step
+    const compile_templates = pugz.compile_tpls.addCompileStep(b, .{
+        .name = "compile-templates",
+        .source_dirs = &.{"views/pages", "views/partials"},
+        .output_dir = "generated",
+    });
+
+    // Templates module from compiled output
+    const templates_mod = b.createModule(.{
+        .root_source_file = compile_templates.getOutput(),
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "myapp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pugz", .module = pugz_dep.module("pugz") },
+                .{ .name = "templates", .module = templates_mod },
+            },
+        }),
+    });
+
+    // Ensure templates compile before building
+    exe.step.dependOn(&compile_templates.step);
+
+    b.installArtifact(exe);
+}
+```
+
+**Step 2: Use compiled templates**
+
+```zig
+const templates = @import("templates");
+
+fn handler(res: *httpz.Response) !void {
+    res.content_type = .HTML;
+    res.body = try templates.pages_home.render(res.arena, .{
+        .title = "Home",
+        .name = "Alice",
+    });
+}
+```
+
+**Template naming:**
+- `views/pages/home.pug` → `templates.pages_home`
+- `views/pages/product-detail.pug` → `templates.pages_product_detail`
+- Directory separators and dashes become underscores
+
+**Benefits:**
+- Zero parsing overhead at runtime
+- Type-safe data binding with compile-time errors
+- Template inheritance (`extends`/`block`) fully resolved at build time
+
+**Current limitations:**
+- `each`/`if` statements not yet supported in compiled mode
+- All data fields must be `[]const u8`
+
+See `examples/demo/` for a complete working example.
+
 ---
 
 ## ViewEngine Options
@@ -154,28 +235,40 @@ const html = try engine.render(arena.allocator(), "index", data);
 
 ## Benchmarks
 
-Same templates and data (`benchmarks/templates/`), MacBook Air M2, 2000 iterations, best of 5 runs.
+Same templates and data (`src/tests/benchmarks/templates/`), MacBook Air M2, 2000 iterations, best of 5 runs.
 
-Both Pug.js and Pugz parse templates once, then measure render-only time.
+### Benchmark Modes
 
-| Template | Pug.js | Pugz | Speedup |
-|----------|--------|------|---------|
-| simple-0 | 0.8ms | 0.2ms | 4x |
-| simple-1 | 1.5ms | 0.9ms | 1.7x |
-| simple-2 | 1.7ms | 2.4ms | 0.7x |
-| if-expression | 0.6ms | 0.4ms | 1.5x |
-| projects-escaped | 4.6ms | 2.4ms | 1.9x |
-| search-results | 15.3ms | 17.7ms | 0.9x |
-| friends | 156.7ms | 132.2ms | 1.2x |
-| **TOTAL** | **181.3ms** | **156.2ms** | **1.16x** |
+| Mode | Description |
+|------|-------------|
+| **Pug.js** | Node.js Pug - compile once, render many |
+| **Prerender** | Pugz - parse + render every iteration (no caching) |
+| **Cached** | Pugz - parse once, render many (like Pug.js) |
+| **Compiled** | Pugz - pre-compiled to Zig functions (zero parse overhead) |
 
-Run benchmarks:
+### Results
+
+| Template | Pug.js | Prerender | Cached | Compiled |
+|----------|--------|-----------|--------|----------|
+| simple-0 | 0.8ms | 23.1ms | 132.3µs | 15.9µs |
+| simple-1 | 1.5ms | 33.5ms | 609.3µs | 17.3µs |
+| simple-2 | 1.7ms | 38.4ms | 936.8µs | 17.8µs |
+| if-expression | 0.6ms | 28.8ms | 23.0µs | 15.5µs |
+| projects-escaped | 4.6ms | 34.2ms | 1.2ms | 15.8µs |
+| search-results | 15.3ms | 34.0ms | 43.5µs | 15.6µs |
+| friends | 156.7ms | 34.7ms | 739.0µs | 16.8µs |
+| **TOTAL** | **181.3ms** | **227.7ms** | **3.7ms** | **114.8µs** |
+
+Compiled templates are ~32x faster than cached and ~2000x faster than prerender.
+
+### Run Benchmarks
+
 ```bash
-# Pugz
+# Pugz (all modes)
 zig build bench
 
 # Pug.js (for comparison)
-cd benchmarks/pugjs && npm install && npm run bench
+cd src/tests/benchmarks/pugjs && npm install && npm run bench
 ```
 
 ---

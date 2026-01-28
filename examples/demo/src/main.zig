@@ -242,8 +242,7 @@ fn home(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
         break :blk try templates.pages_home.render(res.arena, .{
             .title = "Home",
             .cartCount = "2",
-            .authenticated = true,
-            .items = sample_products,
+            .authenticated = "true",
         });
     } else app.view.render(res.arena, "pages/home", .{
         .title = "Home",
@@ -315,7 +314,6 @@ fn cart(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
             .subtotal = sample_cart.subtotal,
             .tax = sample_cart.tax,
             .total = sample_cart.total,
-            .cartItems = &sample_cart_items,
         });
     } else app.view.render(res.arena, "pages/cart", .{
         .title = "Shopping Cart",
