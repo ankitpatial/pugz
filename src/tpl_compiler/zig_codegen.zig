@@ -224,28 +224,69 @@ pub const Codegen = struct {
 
         if (!has_dynamic_attrs) {
             // All static attributes - include in buffer
+            // Collect class values to merge into single attribute
+            var class_values = std.ArrayListUnmanaged([]const u8){};
+            defer class_values.deinit(self.allocator);
+
             for (tag.attrs.items) |attr| {
-                try self.addStatic(" ");
-                try self.addStatic(attr.name);
-                if (attr.val) |val| {
-                    try self.addStatic("=\"");
-                    try self.addStatic(val);
-                    try self.addStatic("\"");
+                if (std.mem.eql(u8, attr.name, "class")) {
+                    // Collect class values for merging
+                    if (attr.val) |val| {
+                        if (val.len > 0) {
+                            try class_values.append(self.allocator, val);
+                        }
+                    }
                 } else {
-                    // Boolean attribute
-                    if (!self.terse) {
+                    try self.addStatic(" ");
+                    try self.addStatic(attr.name);
+                    if (attr.val) |val| {
                         try self.addStatic("=\"");
-                        try self.addStatic(attr.name);
+                        try self.addStatic(val);
                         try self.addStatic("\"");
+                    } else {
+                        // Boolean attribute
+                        if (!self.terse) {
+                            try self.addStatic("=\"");
+                            try self.addStatic(attr.name);
+                            try self.addStatic("\"");
+                        }
                     }
                 }
             }
+
+            // Output merged class attribute
+            if (class_values.items.len > 0) {
+                try self.addStatic(" class=\"");
+                for (class_values.items, 0..) |class_val, i| {
+                    if (i > 0) {
+                        try self.addStatic(" ");
+                    }
+                    try self.addStatic(class_val);
+                }
+                try self.addStatic("\"");
+            }
+
             try self.addStatic(">");
         } else {
             // Flush static content before dynamic attributes (this closes any open string)
             try self.flushStaticBuffer();
 
+            // Collect static class values for merging
+            var static_class_values = std.ArrayListUnmanaged([]const u8){};
+            defer static_class_values.deinit(self.allocator);
+
+            // First pass: output non-class attributes
             for (tag.attrs.items) |attr| {
+                // Skip class attributes - handle them separately
+                if (std.mem.eql(u8, attr.name, "class")) {
+                    if (attr.val) |val| {
+                        if (val.len > 0) {
+                            try static_class_values.append(self.allocator, val);
+                        }
+                    }
+                    continue;
+                }
+
                 if (attr.val) |val| {
                     // Quoted values are always static, unquoted can be field references
                     if (!attr.quoted and self.isDataFieldReference(val)) {
@@ -301,6 +342,19 @@ pub const Codegen = struct {
                     }
                     try self.writeLine("\");");
                 }
+            }
+
+            // Output merged class attribute
+            if (static_class_values.items.len > 0) {
+                try self.writeIndent();
+                try self.write("try buf.appendSlice(allocator, \" class=\\\"");
+                for (static_class_values.items, 0..) |class_val, i| {
+                    if (i > 0) {
+                        try self.write(" ");
+                    }
+                    try self.writeEscaped(class_val);
+                }
+                try self.writeLine("\\\"\");");
             }
 
             try self.writeIndent();
