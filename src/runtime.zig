@@ -1,7 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
-const ArrayListUnmanaged = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 
 // ============================================================================
 // Pug Runtime - HTML generation utilities
@@ -45,7 +45,7 @@ pub fn escape(allocator: Allocator, html: []const u8) ![]const u8 {
         return try allocator.dupe(u8, html);
     }
 
-    var result: ArrayListUnmanaged(u8) = .{};
+    var result: ArrayList(u8) = .{};
     errdefer result.deinit(allocator);
 
     for (html) |c| {
@@ -84,7 +84,7 @@ pub fn style(allocator: Allocator, val: StyleValue) ![]const u8 {
             return try allocator.dupe(u8, s);
         },
         .object => |props| {
-            var result: ArrayListUnmanaged(u8) = .{};
+            var result: ArrayList(u8) = .{};
             errdefer result.deinit(allocator);
 
             for (props) |prop| {
@@ -111,7 +111,7 @@ pub const AttrValue = union(enum) {
 /// Returns empty string for false/null values.
 /// For true values, returns terse form " key" or full form " key="key"".
 pub fn attr(allocator: Allocator, key: []const u8, val: AttrValue, escaped: bool, terse: bool) ![]const u8 {
-    var result: ArrayListUnmanaged(u8) = .{};
+    var result: ArrayList(u8) = .{};
     errdefer result.deinit(allocator);
     try appendAttr(allocator, &result, key, val, escaped, terse);
     if (result.items.len == 0) {
@@ -122,7 +122,7 @@ pub fn attr(allocator: Allocator, key: []const u8, val: AttrValue, escaped: bool
 
 /// Append attribute directly to output buffer - avoids intermediate allocations
 /// This is the preferred method for rendering attributes in hot paths
-pub fn appendAttr(allocator: Allocator, output: *ArrayListUnmanaged(u8), key: []const u8, val: AttrValue, escaped: bool, terse: bool) !void {
+pub fn appendAttr(allocator: Allocator, output: *ArrayList(u8), key: []const u8, val: AttrValue, escaped: bool, terse: bool) !void {
     switch (val) {
         .none => return,
         .boolean => |b| {
@@ -186,7 +186,7 @@ pub const ClassCondition = struct {
 /// Arrays are flattened, objects include keys with truthy values.
 /// Optimized to minimize allocations by writing directly to result buffer.
 pub fn classes(allocator: Allocator, val: ClassValue, escaping: ?[]const bool) ![]const u8 {
-    var result: ArrayListUnmanaged(u8) = .{};
+    var result: ArrayList(u8) = .{};
     errdefer result.deinit(allocator);
 
     try classesInternal(allocator, val, escaping, &result, 0);
@@ -204,7 +204,7 @@ fn classesInternal(
     allocator: Allocator,
     val: ClassValue,
     escaping: ?[]const bool,
-    result: *ArrayListUnmanaged(u8),
+    result: *ArrayList(u8),
     depth: usize,
 ) !void {
     switch (val) {
@@ -236,7 +236,7 @@ fn classesInternal(
                     const had_content = start_len > 0;
 
                     // Temporarily collect the class string
-                    var temp: ArrayListUnmanaged(u8) = .{};
+                    var temp: ArrayList(u8) = .{};
                     defer temp.deinit(allocator);
                     try classesInternal(allocator, item, null, &temp, depth + 1);
 
@@ -256,7 +256,7 @@ fn classesInternal(
 
 /// Append escaped HTML directly to result buffer (avoids intermediate allocation)
 /// Public for use by codegen and other modules
-pub fn appendEscaped(allocator: Allocator, result: *ArrayListUnmanaged(u8), html: []const u8) !void {
+pub fn appendEscaped(allocator: Allocator, result: *ArrayList(u8), html: []const u8) !void {
     for (html) |c| {
         if (escapeChar(c)) |escaped| {
             try result.appendSlice(allocator, escaped);
@@ -350,7 +350,7 @@ pub fn isHtmlEntity(str: []const u8) bool {
 /// Escape for text content - escapes < > & (NOT quotes)
 /// Preserves existing HTML entities like &#8217; or &amp;
 /// Shared across codegen.zig and template.zig.
-pub fn appendTextEscaped(allocator: Allocator, output: *ArrayListUnmanaged(u8), str: []const u8) Allocator.Error!void {
+pub fn appendTextEscaped(allocator: Allocator, output: *ArrayList(u8), str: []const u8) Allocator.Error!void {
     var i: usize = 0;
     while (i < str.len) {
         const c = str[i];
@@ -396,7 +396,7 @@ pub const AttrEntry = struct {
 /// Render multiple attributes.
 /// Class attributes are processed specially and placed first.
 pub fn attrs(allocator: Allocator, entries: []const AttrEntry, terse: bool) ![]const u8 {
-    var result: ArrayListUnmanaged(u8) = .{};
+    var result: ArrayList(u8) = .{};
     errdefer result.deinit(allocator);
 
     // First pass: find and render class attribute
@@ -459,7 +459,7 @@ pub const MergedValue = struct {
     key: []const u8,
     value: MergeValue,
     allocator: Allocator,
-    owned_strings: ArrayListUnmanaged([]const u8),
+    owned_strings: ArrayList([]const u8),
 
     pub fn deinit(self: *MergedValue) void {
         for (self.owned_strings.items) |s| {
@@ -474,7 +474,7 @@ fn ensureTrailingSemicolon(allocator: Allocator, s: []const u8) ![]const u8 {
     if (s.len == 0) return try allocator.dupe(u8, "");
     if (s[s.len - 1] == ';') return try allocator.dupe(u8, s);
 
-    var result: ArrayListUnmanaged(u8) = .{};
+    var result: ArrayList(u8) = .{};
     errdefer result.deinit(allocator);
     try result.appendSlice(allocator, s);
     try result.append(allocator, ';');
@@ -495,9 +495,9 @@ fn styleToString(allocator: Allocator, val: StyleValue) ![]const u8 {
 /// Merged attributes result with O(1) lookups for class/style
 pub const MergedAttrs = struct {
     allocator: Allocator,
-    entries: ArrayListUnmanaged(MergedAttrEntry),
-    owned_strings: ArrayListUnmanaged([]const u8),
-    owned_class_arrays: ArrayListUnmanaged([][]const u8),
+    entries: ArrayList(MergedAttrEntry),
+    owned_strings: ArrayList([]const u8),
+    owned_class_arrays: ArrayList([][]const u8),
     // O(1) index tracking for special keys
     class_idx: ?usize = null,
     style_idx: ?usize = null,
@@ -751,7 +751,7 @@ fn mergeStyleValue(result: *MergedAttrs, idx: usize, value: MergedAttrValue) !vo
                     const s2 = try ensureTrailingSemicolon(allocator, s);
                     defer allocator.free(s2);
 
-                    var combined: ArrayListUnmanaged(u8) = .{};
+                    var combined: ArrayList(u8) = .{};
                     errdefer combined.deinit(allocator);
                     try combined.appendSlice(allocator, s1);
                     try combined.appendSlice(allocator, s2);
@@ -842,7 +842,7 @@ pub const PugError = struct {
 };
 
 fn formatErrorMessage(allocator: Allocator, err_message: []const u8, filename: ?[]const u8, line: usize, src: []const u8) ![]const u8 {
-    var result: ArrayListUnmanaged(u8) = .{};
+    var result: ArrayList(u8) = .{};
     errdefer result.deinit(allocator);
 
     // Add filename and line

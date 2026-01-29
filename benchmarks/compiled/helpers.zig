@@ -4,7 +4,7 @@
 const std = @import("std");
 
 /// Append HTML-escaped string to buffer
-pub fn appendEscaped(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, str: []const u8) !void {
+pub fn appendEscaped(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, str: []const u8) !void {
     for (str) |c| {
         switch (c) {
             '&' => try buf.appendSlice(allocator, "&amp;"),

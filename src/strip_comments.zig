@@ -44,7 +44,7 @@ pub const StripCommentsError = error{
 // ============================================================================
 
 pub const StripCommentsResult = struct {
-    tokens: std.ArrayListUnmanaged(Token),
+    tokens: std.ArrayList(Token),
     err: ?PugError = null,
 
     pub fn deinit(self: *StripCommentsResult, allocator: Allocator) void {

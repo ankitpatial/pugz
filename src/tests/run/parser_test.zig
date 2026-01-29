@@ -97,7 +97,7 @@ const ParsedTokens = struct {
 };
 
 fn parseJsonTokens(allocator: std.mem.Allocator, json_content: []const u8) !ParsedTokens {
-    var tokens = std.ArrayListUnmanaged(Token){};
+    var tokens = std.ArrayList(Token){};
     errdefer tokens.deinit(allocator);
 
     // Use an arena allocator to keep JSON string data alive
@@ -257,8 +257,8 @@ const TokenTestCase = struct {
     }
 };
 
-fn loadTokenTestCases(allocator: std.mem.Allocator, dir_path: []const u8) !std.ArrayListUnmanaged(TokenTestCase) {
-    var cases = std.ArrayListUnmanaged(TokenTestCase){};
+fn loadTokenTestCases(allocator: std.mem.Allocator, dir_path: []const u8) !std.ArrayList(TokenTestCase) {
+    var cases = std.ArrayList(TokenTestCase){};
     errdefer {
         for (cases.items) |*c| c.deinit();
         cases.deinit(allocator);

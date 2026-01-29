@@ -45,11 +45,11 @@ pub const TypeInfo = struct {
 
 pub const Codegen = struct {
     allocator: Allocator,
-    output: std.ArrayListUnmanaged(u8),
+    output: std.ArrayList(u8),
     indent_level: usize,
     terse: bool, // HTML5 mode vs XHTML
     // Buffer for combining consecutive static strings
-    static_buffer: std.ArrayListUnmanaged(u8),
+    static_buffer: std.ArrayList(u8),
     // Type hints from @TypeOf annotations
     type_hints: std.StringHashMap(TypeInfo),
     // Current loop variable for field resolution inside each blocks
@@ -141,7 +141,7 @@ pub const Codegen = struct {
 
         // Initialize buffer
         try self.writeIndent();
-        try self.writeLine("var buf: std.ArrayListUnmanaged(u8) = .{};");
+        try self.writeLine("var buf: std.ArrayList(u8) = .{};");
         try self.writeIndent();
         try self.writeLine("defer buf.deinit(allocator);");
 
@@ -797,7 +797,7 @@ pub fn extractFieldNames(allocator: Allocator, ast: *Node) ![][]const u8 {
     try extractFieldNamesRecursive(ast, &fields, &loop_vars);
 
     // Convert to sorted slice and sanitize field names
-    var result: std.ArrayListUnmanaged([]const u8) = .{};
+    var result: std.ArrayList([]const u8) = .{};
     errdefer {
         for (result.items) |item| allocator.free(item);
         result.deinit(allocator);

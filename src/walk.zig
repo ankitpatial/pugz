@@ -19,7 +19,7 @@ pub const WalkOptions = struct {
     /// Include dependencies (traverse into FileReference.ast if present)
     include_dependencies: bool = false,
     /// Parent node stack (managed internally during walk)
-    parents: std.ArrayListUnmanaged(*Node) = .{},
+    parents: std.ArrayList(*Node) = .{},
 
     pub fn deinit(self: *WalkOptions, allocator: Allocator) void {
         self.parents.deinit(allocator);
@@ -359,7 +359,7 @@ fn visitChildren(
 /// Walk a list of nodes and merge results (handling array replacements)
 fn walkAndMergeNodes(
     allocator: Allocator,
-    nodes: *std.ArrayListUnmanaged(*Node),
+    nodes: *std.ArrayList(*Node),
     before: ?BeforeCallback,
     after: ?AfterCallback,
     options: *WalkOptions,
@@ -484,9 +484,9 @@ pub fn collectNodes(
     allocator: Allocator,
     ast: *Node,
     node_type: NodeType,
-) WalkError!std.ArrayListUnmanaged(*Node) {
+) WalkError!std.ArrayList(*Node) {
     const Collector = struct {
-        collected: std.ArrayListUnmanaged(*Node) = .{},
+        collected: std.ArrayList(*Node) = .{},
         alloc: Allocator,
         target_type: NodeType,
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
-const ArrayListUnmanaged = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 
 // ============================================================================
 // Pug Error - Error formatting with source context
@@ -47,7 +47,7 @@ pub const PugError = struct {
 
     /// Format as JSON-like structure for serialization
     pub fn toJson(self: *const PugError, allocator: Allocator) ![]const u8 {
-        var result: ArrayListUnmanaged(u8) = .{};
+        var result: ArrayList(u8) = .{};
         errdefer result.deinit(allocator);
 
         try result.appendSlice(allocator, "{\"code\":\"");
@@ -76,7 +76,7 @@ pub const PugError = struct {
 };
 
 /// Append JSON-escaped string to result
-fn appendJsonEscaped(allocator: Allocator, result: *ArrayListUnmanaged(u8), s: []const u8) !void {
+fn appendJsonEscaped(allocator: Allocator, result: *ArrayList(u8), s: []const u8) !void {
     for (s) |c| {
         switch (c) {
             '"' => try result.appendSlice(allocator, "\\\""),
@@ -150,7 +150,7 @@ fn formatErrorMessage(
 ) ![]const u8 {
     _ = code; // Code is embedded in PugError struct
 
-    var result: ArrayListUnmanaged(u8) = .{};
+    var result: ArrayList(u8) = .{};
     errdefer result.deinit(allocator);
 
     // Header: filename:line:column or Pug:line:column
@@ -231,7 +231,7 @@ fn formatErrorMessage(
 
 /// Split source into lines (handles \n, \r\n, \r)
 fn splitLines(allocator: Allocator, src: []const u8) ![][]const u8 {
-    var lines: ArrayListUnmanaged([]const u8) = .{};
+    var lines: ArrayList([]const u8) = .{};
     errdefer lines.deinit(allocator);
 
     var start: usize = 0;

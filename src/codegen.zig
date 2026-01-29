@@ -85,7 +85,7 @@ pub const CompilerError = error{
 pub const Compiler = struct {
     allocator: Allocator,
     options: CompilerOptions,
-    output: std.ArrayListUnmanaged(u8),
+    output: std.ArrayList(u8),
     indent_level: usize = 0,
     has_doctype: bool = false,
     has_tag: bool = false,

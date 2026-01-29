@@ -12,6 +12,10 @@ Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It compiles Pug t
 - When the user specifies a new rule, update this CLAUDE.md file to include it.
 - Code comments are required but must be meaningful, not bloated. Focus on explaining "why" not "what". Avoid obvious comments like "// increment counter" - instead explain complex logic, non-obvious decisions, or tricky edge cases.
 - **All documentation files (.md) must be saved to the `docs/` directory.** Do not create .md files in the root directory or examples directories - always place them in `docs/`.
+- **Follow Zig standards for the version specified in `build.zig.zon`** (currently 0.15.2). This includes:
+  - Use `std.ArrayList(T)` instead of the deprecated `std.ArrayListUnmanaged(T)` (renamed in Zig 0.15)
+  - Pass allocator to method calls (`append`, `deinit`, etc.) as per the unmanaged pattern
+  - Check Zig release notes for API changes when updating the minimum Zig version
 - **Publish command**: Only when user explicitly says "publish", do the following:
   1. Bump the fix version (patch version in build.zig.zon)
   2. Git commit with appropriate message

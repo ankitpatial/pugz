@@ -102,10 +102,10 @@ pub fn link(allocator: Allocator, ast: *Node) LinkerError!LinkerResult {
     // Handle extends
     if (extends_node) |ext_node| {
         // Get mixins and expected blocks from current template
-        var mixins = std.ArrayListUnmanaged(*Node){};
+        var mixins = std.ArrayList(*Node){};
         defer mixins.deinit(allocator);
 
-        var expected_blocks = std.ArrayListUnmanaged(*Node){};
+        var expected_blocks = std.ArrayList(*Node){};
         defer expected_blocks.deinit(allocator);
 
         try collectMixinsAndBlocks(allocator, result.ast, &mixins, &expected_blocks);
@@ -178,8 +178,8 @@ fn findDeclaredBlocks(allocator: Allocator, ast: *Node) LinkerError!BlockDefinit
 fn collectMixinsAndBlocks(
     allocator: Allocator,
     ast: *Node,
-    mixins: *std.ArrayListUnmanaged(*Node),
-    expected_blocks: *std.ArrayListUnmanaged(*Node),
+    mixins: *std.ArrayList(*Node),
+    expected_blocks: *std.ArrayList(*Node),
 ) LinkerError!void {
     for (ast.nodes.items) |node| {
         switch (node.type) {

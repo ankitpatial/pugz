@@ -357,7 +357,7 @@ pub fn pathJoin(allocator: Allocator, base: []const u8, relative: []const u8) ![
     const base_dir = dirname(base);
 
     // Handle .. and . components
-    var result = std.ArrayListUnmanaged(u8){};
+    var result = std.ArrayList(u8){};
     errdefer result.deinit(allocator);
 
     try result.appendSlice(allocator, base_dir);

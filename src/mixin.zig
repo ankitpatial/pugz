@@ -289,7 +289,7 @@ fn substituteArgs(
     }
 
     // Perform substitution
-    var result = std.ArrayListUnmanaged(u8){};
+    var result = std.ArrayList(u8){};
     errdefer result.deinit(allocator);
 
     var i: usize = 0;
@@ -335,7 +335,7 @@ fn evaluateStringConcat(allocator: Allocator, expr: []const u8) ![]const u8 {
     // Check if there's a + operator (string concat)
     _ = mem.indexOf(u8, expr, " + ") orelse return expr;
 
-    var result = std.ArrayListUnmanaged(u8){};
+    var result = std.ArrayList(u8){};
     errdefer result.deinit(allocator);
 
     var remaining = expr;
@@ -386,7 +386,7 @@ fn bindArguments(
     bindings: *std.StringHashMapUnmanaged([]const u8),
 ) MixinError!void {
     // Parse parameter names from definition: "text, type" or "text, type='primary'"
-    var param_names = std.ArrayListUnmanaged([]const u8){};
+    var param_names = std.ArrayList([]const u8){};
     defer param_names.deinit(allocator);
 
     var param_iter = mem.splitSequence(u8, params, ",");
@@ -409,7 +409,7 @@ fn bindArguments(
     }
 
     // Parse argument values from call: "'Click', 'primary'" or "text='Click'"
-    var arg_values = std.ArrayListUnmanaged([]const u8){};
+    var arg_values = std.ArrayList([]const u8){};
     defer arg_values.deinit(allocator);
 
     // Simple argument parsing - split by comma but respect quotes
@@ -588,12 +588,6 @@ test "bindArguments - with default value in param" {
 
     // This is how it appears: params have default, args are the call args
     try bindArguments(allocator, "text, type=\"primary\"", "\"Click Me\", \"primary\"", &bindings);
-
-    std.debug.print("\nBindings:\n", .{});
-    var iter = bindings.iterator();
-    while (iter.next()) |entry| {
-        std.debug.print("  {s} = '{s}'\n", .{ entry.key_ptr.*, entry.value_ptr.* });
-    }
 
     try std.testing.expectEqualStrings("Click Me", bindings.get("text").?);
     try std.testing.expectEqualStrings("primary", bindings.get("type").?);

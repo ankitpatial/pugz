@@ -311,7 +311,7 @@ pub const ViewEngine = struct {
 
         // Normalize the path (resolve ".." and ".")
         // We need to handle this manually since std.fs.path.resolve needs absolute paths
-        var components = std.ArrayListUnmanaged([]const u8){};
+        var components = std.ArrayList([]const u8){};
         defer components.deinit(allocator);
 
         var iter = std.mem.splitScalar(u8, joined, '/');

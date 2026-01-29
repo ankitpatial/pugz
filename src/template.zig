@@ -97,7 +97,7 @@ pub fn renderWithData(allocator: Allocator, source: []const u8, data: anytype) !
 /// Render a pre-parsed AST with data. Use this for better performance when
 /// rendering the same template multiple times - parse once, render many.
 pub fn renderAst(allocator: Allocator, ast: *Node, data: anytype) ![]const u8 {
-    var output = std.ArrayListUnmanaged(u8){};
+    var output = std.ArrayList(u8){};
     errdefer output.deinit(allocator);
 
     // Detect doctype to set terse mode
@@ -122,7 +122,7 @@ pub fn renderAstWithMixins(allocator: Allocator, ast: *Node, data: anytype, regi
 
 /// Render a pre-parsed AST with data, mixin registry, and render options.
 pub fn renderAstWithMixinsAndOptions(allocator: Allocator, ast: *Node, data: anytype, registry: *const MixinRegistry, options: RenderOptions) ![]const u8 {
-    var output = std.ArrayListUnmanaged(u8){};
+    var output = std.ArrayList(u8){};
     errdefer output.deinit(allocator);
 
     // Detect doctype to set terse mode
@@ -213,14 +213,14 @@ fn detectDoctype(node: *Node, ctx: *RenderContext) void {
 const whitespace_sensitive_tags = runtime.whitespace_sensitive_tags;
 
 /// Write indentation (two spaces per level)
-fn writeIndent(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), level: u32) Allocator.Error!void {
+fn writeIndent(allocator: Allocator, output: *std.ArrayList(u8), level: u32) Allocator.Error!void {
     var i: u32 = 0;
     while (i < level) : (i += 1) {
         try output.appendSlice(allocator, "  ");
     }
 }
 
-fn renderNode(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), node: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
+fn renderNode(allocator: Allocator, output: *std.ArrayList(u8), node: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
     switch (node.type) {
         .Block, .NamedBlock => {
             for (node.nodes.items) |child| {
@@ -251,7 +251,7 @@ fn renderNode(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), node: *
     }
 }
 
-fn renderTag(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), tag: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
+fn renderTag(allocator: Allocator, output: *std.ArrayList(u8), tag: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
     const name = tag.name orelse "div";
     const is_whitespace_sensitive = whitespace_sensitive_tags.has(name);
 
@@ -393,13 +393,13 @@ fn evaluateAttrValue(allocator: Allocator, val: ?[]const u8, data: anytype) !run
     return .{ .string = v };
 }
 
-fn renderText(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), text: *Node, data: anytype) Allocator.Error!void {
+fn renderText(allocator: Allocator, output: *std.ArrayList(u8), text: *Node, data: anytype) Allocator.Error!void {
     if (text.val) |val| {
         try processInterpolation(allocator, output, val, false, data);
     }
 }
 
-fn renderCode(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), code: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
+fn renderCode(allocator: Allocator, output: *std.ArrayList(u8), code: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
     if (code.buffer) {
         if (code.val) |val| {
             // Check if it's a string literal (quoted)
@@ -441,7 +441,7 @@ fn renderCode(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), code: *
 }
 
 /// Render mixin definition or call
-fn renderMixin(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), node: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
+fn renderMixin(allocator: Allocator, output: *std.ArrayList(u8), node: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
     // Mixin definitions are skipped (only mixin calls render)
     if (!node.call) return;
 
@@ -494,7 +494,7 @@ fn bindMixinArguments(
     bindings: *std.StringHashMapUnmanaged([]const u8),
 ) !void {
     // Parse parameter names from definition: "text, type" or "text, type='primary'"
-    var param_names = std.ArrayListUnmanaged([]const u8){};
+    var param_names = std.ArrayList([]const u8){};
     defer param_names.deinit(allocator);
 
     var param_iter = std.mem.splitSequence(u8, params, ",");
@@ -517,7 +517,7 @@ fn bindMixinArguments(
     }
 
     // Parse argument values from call: "'Click', 'primary'" or "text='Click'"
-    var arg_values = std.ArrayListUnmanaged([]const u8){};
+    var arg_values = std.ArrayList([]const u8){};
     defer arg_values.deinit(allocator);
 
     // Simple argument parsing - split by comma but respect quotes
@@ -572,7 +572,7 @@ fn stripQuotes(val: []const u8) []const u8 {
     return val;
 }
 
-fn renderEach(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), each: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
+fn renderEach(allocator: Allocator, output: *std.ArrayList(u8), each: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
     const collection_name = each.obj orelse return;
     const item_name = each.val orelse "item";
     _ = item_name;
@@ -623,7 +623,7 @@ fn renderEach(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), each: *
     }
 }
 
-fn renderNodeWithItem(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), node: *Node, data: anytype, item: []const u8, ctx: *const RenderContext) Allocator.Error!void {
+fn renderNodeWithItem(allocator: Allocator, output: *std.ArrayList(u8), node: *Node, data: anytype, item: []const u8, ctx: *const RenderContext) Allocator.Error!void {
     switch (node.type) {
         .Block, .NamedBlock => {
             for (node.nodes.items) |child| {
@@ -649,7 +649,7 @@ fn renderNodeWithItem(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
     }
 }
 
-fn renderTagWithItem(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), tag: *Node, data: anytype, item: []const u8, ctx: *const RenderContext) Allocator.Error!void {
+fn renderTagWithItem(allocator: Allocator, output: *std.ArrayList(u8), tag: *Node, data: anytype, item: []const u8, ctx: *const RenderContext) Allocator.Error!void {
     const name = tag.name orelse "div";
 
     try output.appendSlice(allocator, "<");
@@ -698,14 +698,14 @@ fn renderTagWithItem(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), 
     }
 }
 
-fn renderTextWithItem(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), text: *Node, item: []const u8) Allocator.Error!void {
+fn renderTextWithItem(allocator: Allocator, output: *std.ArrayList(u8), text: *Node, item: []const u8) Allocator.Error!void {
     if (text.val) |val| {
         try runtime.appendEscaped(allocator, output, val);
         _ = item;
     }
 }
 
-fn processInterpolationWithItem(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), text: []const u8, escape: bool, data: anytype, item: []const u8) Allocator.Error!void {
+fn processInterpolationWithItem(allocator: Allocator, output: *std.ArrayList(u8), text: []const u8, escape: bool, data: anytype, item: []const u8) Allocator.Error!void {
     _ = data;
     var i: usize = 0;
     while (i < text.len) {
@@ -740,7 +740,7 @@ fn processInterpolationWithItem(allocator: Allocator, output: *std.ArrayListUnma
     }
 }
 
-fn renderComment(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), comment: *Node) Allocator.Error!void {
+fn renderComment(allocator: Allocator, output: *std.ArrayList(u8), comment: *Node) Allocator.Error!void {
     if (!comment.buffer) return;
     try output.appendSlice(allocator, "<!--");
     if (comment.val) |val| {
@@ -749,7 +749,7 @@ fn renderComment(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), comm
     try output.appendSlice(allocator, "-->");
 }
 
-fn renderBlockComment(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), comment: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
+fn renderBlockComment(allocator: Allocator, output: *std.ArrayList(u8), comment: *Node, data: anytype, ctx: *const RenderContext) Allocator.Error!void {
     if (!comment.buffer) return;
     try output.appendSlice(allocator, "<!--");
     if (comment.val) |val| {
@@ -765,7 +765,7 @@ fn renderBlockComment(allocator: Allocator, output: *std.ArrayListUnmanaged(u8),
 // Import doctypes from runtime (shared with codegen)
 const doctypes = runtime.doctypes;
 
-fn renderDoctype(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), doctype: *Node) Allocator.Error!void {
+fn renderDoctype(allocator: Allocator, output: *std.ArrayList(u8), doctype: *Node) Allocator.Error!void {
     if (doctype.val) |val| {
         if (doctypes.get(val)) |dt| {
             try output.appendSlice(allocator, dt);
@@ -781,7 +781,7 @@ fn renderDoctype(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), doct
 
 /// Process interpolation #{expr} in text
 /// escape_quotes: true for attribute values (escape "), false for text content
-fn processInterpolation(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), text: []const u8, escape_quotes: bool, data: anytype) Allocator.Error!void {
+fn processInterpolation(allocator: Allocator, output: *std.ArrayList(u8), text: []const u8, escape_quotes: bool, data: anytype) Allocator.Error!void {
     var i: usize = 0;
     while (i < text.len) {
         if (i + 1 < text.len and text[i] == '#' and text[i + 1] == '{') {
@@ -867,7 +867,7 @@ fn getFieldValue(data: anytype, name: []const u8) ?[]const u8 {
 /// Escape for text content - escapes < > & (NOT quotes)
 /// Preserves existing HTML entities like &#8217;
 /// Uses shared appendTextEscaped from runtime.zig.
-fn appendTextEscaped(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), str: []const u8) Allocator.Error!void {
+fn appendTextEscaped(allocator: Allocator, output: *std.ArrayList(u8), str: []const u8) Allocator.Error!void {
     try runtime.appendTextEscaped(allocator, output, str);
 }
 

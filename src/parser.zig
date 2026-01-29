@@ -110,7 +110,7 @@ pub const Node = struct {
     filename: ?[]const u8 = null,
 
     // Block fields
-    nodes: std.ArrayListUnmanaged(*Node) = .{},
+    nodes: std.ArrayList(*Node) = .{},
 
     // NamedBlock additional fields
     name: ?[]const u8 = null, // Also used for Tag, Mixin, Filter
@@ -118,8 +118,8 @@ pub const Node = struct {
 
     // Tag fields
     self_closing: bool = false,
-    attrs: std.ArrayListUnmanaged(Attribute) = .{},
-    attribute_blocks: std.ArrayListUnmanaged(AttributeBlock) = .{},
+    attrs: std.ArrayList(Attribute) = .{},
+    attribute_blocks: std.ArrayList(AttributeBlock) = .{},
     is_inline: bool = false,
     text_only: bool = false,
     self_closing_allowed: bool = false,
@@ -150,7 +150,7 @@ pub const Node = struct {
     file: ?FileReference = null,
 
     // Include fields
-    filters: std.ArrayListUnmanaged(*Node) = .{},
+    filters: std.ArrayList(*Node) = .{},
 
     // InterpolatedTag fields
     expr: ?[]const u8 = null,
@@ -247,7 +247,7 @@ pub const Parser = struct {
     allocator: Allocator,
     tokens: []const Token,
     pos: usize = 0,
-    deferred: std.ArrayListUnmanaged(Token) = .{},
+    deferred: std.ArrayList(Token) = .{},
     filename: ?[]const u8 = null,
     src: ?[]const u8 = null,
     in_mixin: usize = 0,
@@ -475,7 +475,7 @@ pub const Parser = struct {
 
     fn parseText(self: *Parser, allow_block: bool) !*Node {
         const lineno = self.peek().loc.start.line;
-        var tags = std.ArrayListUnmanaged(*Node){};
+        var tags = std.ArrayList(*Node){};
         defer tags.deinit(self.allocator);
 
         while (true) {
@@ -548,8 +548,8 @@ pub const Parser = struct {
         }
     }
 
-    fn parseTextHtml(self: *Parser) !std.ArrayListUnmanaged(*Node) {
-        var nodes = std.ArrayListUnmanaged(*Node){};
+    fn parseTextHtml(self: *Parser) !std.ArrayList(*Node) {
+        var nodes = std.ArrayList(*Node){};
         var current_node: ?*Node = null;
 
         while (true) {
@@ -922,7 +922,7 @@ pub const Parser = struct {
         const line = tok.loc.start.line;
         const column = tok.loc.start.column;
 
-        var text = std.ArrayListUnmanaged(u8){};
+        var text = std.ArrayList(u8){};
         defer text.deinit(self.allocator);
 
         if (self.peek().type == .start_pipeless_text) {
@@ -1095,7 +1095,7 @@ pub const Parser = struct {
 
     fn parseIncludeFilter(self: *Parser) !*Node {
         const tok = try self.expect(.filter);
-        var filter_attrs = std.ArrayListUnmanaged(Attribute){};
+        var filter_attrs = std.ArrayList(Attribute){};
 
         if (self.peek().type == .start_attributes) {
             filter_attrs = try self.attrs(null);
@@ -1115,7 +1115,7 @@ pub const Parser = struct {
 
     fn parseFilter(self: *Parser) !*Node {
         const tok = try self.expect(.filter);
-        var filter_attrs = std.ArrayListUnmanaged(Attribute){};
+        var filter_attrs = std.ArrayList(Attribute){};
 
         if (self.peek().type == .start_attributes) {
             filter_attrs = try self.attrs(null);
@@ -1483,11 +1483,11 @@ pub const Parser = struct {
 
     fn tag_(self: *Parser, tag: *Node, self_closing_allowed: bool) !void {
         var seen_attrs = false;
-        var attribute_names = std.ArrayListUnmanaged([]const u8){};
+        var attribute_names = std.ArrayList([]const u8){};
         defer attribute_names.deinit(self.allocator);
 
         // Collect class values to merge into single attribute
-        var class_values = std.ArrayListUnmanaged([]const u8){};
+        var class_values = std.ArrayList([]const u8){};
         defer class_values.deinit(self.allocator);
         var class_line: usize = 0;
         var class_column: usize = 0;
@@ -1689,10 +1689,10 @@ pub const Parser = struct {
         }
     }
 
-    fn attrs(self: *Parser, attribute_names: ?*std.ArrayListUnmanaged([]const u8)) !std.ArrayListUnmanaged(Attribute) {
+    fn attrs(self: *Parser, attribute_names: ?*std.ArrayList([]const u8)) !std.ArrayList(Attribute) {
         _ = try self.expect(.start_attributes);
 
-        var result = std.ArrayListUnmanaged(Attribute){};
+        var result = std.ArrayList(Attribute){};
         var tok = self.advance();
 
         while (tok.type == .attribute) {

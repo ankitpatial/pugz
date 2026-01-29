@@ -20,7 +20,7 @@ pub fn main() !void {
     defer dir.close();
 
     // Collect .pug files
-    var files = std.ArrayListUnmanaged([]const u8){};
+    var files = std.ArrayList([]const u8){};
     defer {
         for (files.items) |f| allocator.free(f);
         files.deinit(allocator);

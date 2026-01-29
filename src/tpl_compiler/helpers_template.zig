@@ -4,7 +4,7 @@
 const std = @import("std");
 
 /// Append HTML-escaped string to buffer
-pub fn appendEscaped(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, str: []const u8) !void {
+pub fn appendEscaped(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, str: []const u8) !void {
     for (str) |c| {
         switch (c) {
             '&' => try buf.appendSlice(allocator, "&amp;"),
@@ -33,21 +33,21 @@ pub fn isTruthy(val: anytype) bool {
 }
 
 /// Append an integer value to buffer (formatted as decimal string)
-pub fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: anytype) !void {
+pub fn appendInt(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, value: anytype) !void {
     var tmp: [32]u8 = undefined;
     const str = std.fmt.bufPrint(&tmp, "{d}", .{value}) catch return;
     try buf.appendSlice(allocator, str);
 }
 
 /// Append a float value to buffer (formatted with 2 decimal places)
-pub fn appendFloat(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: anytype) !void {
+pub fn appendFloat(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, value: anytype) !void {
     var tmp: [64]u8 = undefined;
     const str = std.fmt.bufPrint(&tmp, "{d:.2}", .{value}) catch return;
     try buf.appendSlice(allocator, str);
 }
 
 /// Append any value to buffer (auto-detects type)
-pub fn appendValue(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: anytype) !void {
+pub fn appendValue(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, value: anytype) !void {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
         .int, .comptime_int => try appendInt(buf, allocator, value),

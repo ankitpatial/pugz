@@ -180,13 +180,13 @@ pub const Token = struct {
 };
 
 // ============================================================================
-// Character Parser State (simplified) - Zig 0.15 style with ArrayListUnmanaged
+// Character Parser State (simplified) - Zig 0.15 style with ArrayList
 // ============================================================================
 
 const BracketType = enum { paren, brace, bracket };
 
 const CharParserState = struct {
-    nesting_stack: std.ArrayListUnmanaged(BracketType) = .{},
+    nesting_stack: std.ArrayList(BracketType) = .{},
     in_string: bool = false,
     string_char: ?u8 = null,
     in_template: bool = false,
@@ -320,7 +320,7 @@ const BracketExpressionResult = struct {
 };
 
 // ============================================================================
-// Lexer - Zig 0.15 style with ArrayListUnmanaged
+// Lexer - Zig 0.15 style with ArrayList
 // ============================================================================
 
 pub const Lexer = struct {
@@ -332,10 +332,10 @@ pub const Lexer = struct {
     interpolated: bool,
     lineno: usize,
     colno: usize,
-    indent_stack: std.ArrayListUnmanaged(usize) = .{},
+    indent_stack: std.ArrayList(usize) = .{},
     indent_re_type: ?IndentType = null,
     interpolation_allowed: bool,
-    tokens: std.ArrayListUnmanaged(Token) = .{},
+    tokens: std.ArrayList(Token) = .{},
     ended: bool,
     last_error: ?LexerError = null,
 
@@ -359,7 +359,7 @@ pub const Lexer = struct {
         }
 
         // Normalize line endings
-        var normalized: std.ArrayListUnmanaged(u8) = .{};
+        var normalized: std.ArrayList(u8) = .{};
         errdefer normalized.deinit(allocator);
 
         var i: usize = 0;
@@ -378,7 +378,7 @@ pub const Lexer = struct {
             }
         }
 
-        var indent_stack: std.ArrayListUnmanaged(usize) = .{};
+        var indent_stack: std.ArrayList(usize) = .{};
         try indent_stack.append(allocator, 0);
 
         const input_slice = try normalized.toOwnedSlice(allocator);
@@ -1349,7 +1349,7 @@ pub const Lexer = struct {
 
     /// Validates that brackets in an expression are balanced
     fn validateExpressionBrackets(self: *Lexer, expr: []const u8) bool {
-        var bracket_stack = std.ArrayListUnmanaged(u8){};
+        var bracket_stack = std.ArrayList(u8){};
         defer bracket_stack.deinit(self.allocator);
 
         var in_string: u8 = 0;
@@ -2309,8 +2309,8 @@ pub const Lexer = struct {
         self.tokens.append(self.allocator, start_token) catch return false;
 
         var string_ptr: usize = 0;
-        var tokens_list: std.ArrayListUnmanaged([]const u8) = .{};
-        var token_indent_list: std.ArrayListUnmanaged(bool) = .{};
+        var tokens_list: std.ArrayList([]const u8) = .{};
+        var token_indent_list: std.ArrayList(bool) = .{};
         defer tokens_list.deinit(self.allocator);
         defer token_indent_list.deinit(self.allocator);
 
@@ -2451,7 +2451,7 @@ pub const Lexer = struct {
                     var in_string: u8 = 0;
 
                     // Track bracket stack - inside #[...] you can have (...) and {...} for attrs/code
-                    var bracket_stack = std.ArrayListUnmanaged(u8){};
+                    var bracket_stack = std.ArrayList(u8){};
                     defer bracket_stack.deinit(self.allocator);
                     bracket_stack.append(self.allocator, '[') catch return;
 
