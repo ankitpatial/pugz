@@ -44,13 +44,28 @@ Source → Lexer → Tokens → StripComments → Parser → AST → Linker → 
 
 **codegen.zig**, **template.zig**, and **zig_codegen.zig** all consume the AST from the parser. When fixing bugs related to AST structure (like attribute handling, class merging, etc.), prefer fixing in **parser.zig** so all three rendering paths benefit from the fix automatically. Only fix in the individual codegen modules if the behavior should differ between rendering modes.
 
+### Shared Utilities in runtime.zig
+
+The `runtime.zig` module is the single source of truth for shared utilities used across all rendering modes:
+
+- **`isHtmlEntity(str)`** - Checks if string starts with valid HTML entity (`&name;`, `&#digits;`, `&#xhex;`)
+- **`appendTextEscaped(allocator, output, str)`** - Escapes text content (`<`, `>`, `&`) preserving existing entities
+- **`isXhtmlDoctype(val)`** - Checks if doctype is XHTML (xml, strict, transitional, frameset, 1.1, basic, mobile)
+- **`escapeChar(c)`** - O(1) lookup table for HTML character escaping
+- **`appendEscaped(allocator, output, str)`** - Escapes all HTML special chars including quotes
+- **`doctypes`** - StaticStringMap of doctype names to DOCTYPE strings
+- **`whitespace_sensitive_tags`** - Tags where whitespace matters (pre, textarea, script, style, code)
+
+The `codegen.zig` module provides:
+- **`void_elements`** - StaticStringMap of HTML5 void/self-closing elements (br, img, input, etc.)
+
 ### Core Modules
 
 | Module | File | Purpose |
 |--------|------|---------|
 | **Lexer** | `src/lexer.zig` | Tokenizes Pug source into tokens |
 | **Parser** | `src/parser.zig` | Builds AST from tokens |
-| **Runtime** | `src/runtime.zig` | Shared utilities (HTML escaping, etc.) |
+| **Runtime** | `src/runtime.zig` | Shared utilities (HTML escaping, entity detection, doctype helpers) |
 | **Error** | `src/error.zig` | Error formatting with source context |
 | **Walk** | `src/walk.zig` | AST traversal with visitor pattern |
 | **Strip Comments** | `src/strip_comments.zig` | Token filtering for comments |

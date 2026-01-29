@@ -603,14 +603,8 @@ pub const Codegen = struct {
         if (node.type == .Doctype) {
             if (node.val) |val| {
                 // XHTML doctypes use non-terse mode
-                if (std.mem.eql(u8, val, "xml") or
-                    std.mem.eql(u8, val, "strict") or
-                    std.mem.eql(u8, val, "transitional") or
-                    std.mem.eql(u8, val, "frameset") or
-                    std.mem.eql(u8, val, "1.1") or
-                    std.mem.eql(u8, val, "basic") or
-                    std.mem.eql(u8, val, "mobile"))
-                {
+                // Uses shared isXhtmlDoctype from runtime.zig
+                if (runtime.isXhtmlDoctype(val)) {
                     self.terse = false;
                 }
             }

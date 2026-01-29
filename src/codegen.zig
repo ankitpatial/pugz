@@ -18,6 +18,8 @@ const runtime = @import("runtime.zig");
 pub const escapeChar = runtime.escapeChar;
 pub const doctypes = runtime.doctypes;
 pub const whitespace_sensitive_tags = runtime.whitespace_sensitive_tags;
+pub const isHtmlEntity = runtime.isHtmlEntity;
+pub const isXhtmlDoctype = runtime.isXhtmlDoctype;
 
 // Import error types
 const pug_error = @import("error.zig");
@@ -157,6 +159,7 @@ pub const Compiler = struct {
     fn writeTextEscaped(self: *Compiler, str: []const u8) CompilerError!void {
         // For text content - escapes < > & (NOT quotes)
         // Preserves existing HTML entities like &#8217; or &amp;
+        // Uses shared isHtmlEntity from runtime.zig
         var i: usize = 0;
         while (i < str.len) {
             const c = str[i];
@@ -165,7 +168,7 @@ pub const Compiler = struct {
                 '>' => try self.write("&gt;"),
                 '&' => {
                     // Check if this is already an HTML entity
-                    if (isHtmlEntity(str[i..])) {
+                    if (runtime.isHtmlEntity(str[i..])) {
                         // Pass through the entity as-is
                         try self.writeChar(c);
                     } else {
@@ -176,66 +179,6 @@ pub const Compiler = struct {
             }
             i += 1;
         }
-    }
-
-    fn isHtmlEntity(str: []const u8) bool {
-        // Check if str starts with a valid HTML entity: &name; or &#digits; or &#xhex;
-        if (str.len < 3 or str[0] != '&') return false;
-
-        var i: usize = 1;
-
-        // Numeric entity: &#digits; or &#xhex;
-        if (str[i] == '#') {
-            i += 1;
-            if (i >= str.len) return false;
-
-            // Hex entity: &#x...;
-            if (str[i] == 'x' or str[i] == 'X') {
-                i += 1;
-                if (i >= str.len) return false;
-                // Need at least one hex digit
-                var has_hex = false;
-                while (i < str.len and i < 10) : (i += 1) {
-                    const ch = str[i];
-                    if (ch == ';') return has_hex;
-                    if ((ch >= '0' and ch <= '9') or
-                        (ch >= 'a' and ch <= 'f') or
-                        (ch >= 'A' and ch <= 'F'))
-                    {
-                        has_hex = true;
-                    } else {
-                        return false;
-                    }
-                }
-                return false;
-            }
-
-            // Decimal entity: &#digits;
-            var has_digit = false;
-            while (i < str.len and i < 10) : (i += 1) {
-                const ch = str[i];
-                if (ch == ';') return has_digit;
-                if (ch >= '0' and ch <= '9') {
-                    has_digit = true;
-                } else {
-                    return false;
-                }
-            }
-            return false;
-        }
-
-        // Named entity: &name;
-        var has_alpha = false;
-        while (i < str.len and i < 32) : (i += 1) {
-            const ch = str[i];
-            if (ch == ';') return has_alpha;
-            if ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9')) {
-                has_alpha = true;
-            } else {
-                return false;
-            }
-        }
-        return false;
     }
 
     fn prettyIndent(self: *Compiler) CompilerError!void {

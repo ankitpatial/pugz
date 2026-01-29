@@ -10,6 +10,7 @@ const pug = @import("pug.zig");
 const parser = @import("parser.zig");
 const Node = parser.Node;
 const runtime = @import("runtime.zig");
+const codegen = @import("codegen.zig");
 const mixin_mod = @import("mixin.zig");
 pub const MixinRegistry = mixin_mod.MixinRegistry;
 
@@ -194,14 +195,7 @@ fn detectDoctype(node: *Node, ctx: *RenderContext) void {
     if (node.type == .Doctype) {
         if (node.val) |val| {
             // XHTML doctypes use non-terse mode
-            if (std.mem.eql(u8, val, "xml") or
-                std.mem.eql(u8, val, "strict") or
-                std.mem.eql(u8, val, "transitional") or
-                std.mem.eql(u8, val, "frameset") or
-                std.mem.eql(u8, val, "1.1") or
-                std.mem.eql(u8, val, "basic") or
-                std.mem.eql(u8, val, "mobile"))
-            {
+            if (runtime.isXhtmlDoctype(val)) {
                 ctx.terse = false;
             }
         }
@@ -826,7 +820,7 @@ fn processInterpolation(allocator: Allocator, output: *std.ArrayListUnmanaged(u8
                 '<' => try output.appendSlice(allocator, "&lt;"),
                 '>' => try output.appendSlice(allocator, "&gt;"),
                 '&' => {
-                    if (isHtmlEntity(text[i..])) {
+                    if (runtime.isHtmlEntity(text[i..])) {
                         try output.append(allocator, c);
                     } else {
                         try output.appendSlice(allocator, "&amp;");
@@ -872,92 +866,15 @@ fn getFieldValue(data: anytype, name: []const u8) ?[]const u8 {
 
 /// Escape for text content - escapes < > & (NOT quotes)
 /// Preserves existing HTML entities like &#8217;
+/// Uses shared appendTextEscaped from runtime.zig.
 fn appendTextEscaped(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), str: []const u8) Allocator.Error!void {
-    var i: usize = 0;
-    while (i < str.len) {
-        const c = str[i];
-        switch (c) {
-            '<' => try output.appendSlice(allocator, "&lt;"),
-            '>' => try output.appendSlice(allocator, "&gt;"),
-            '&' => {
-                if (isHtmlEntity(str[i..])) {
-                    try output.append(allocator, c);
-                } else {
-                    try output.appendSlice(allocator, "&amp;");
-                }
-            },
-            else => try output.append(allocator, c),
-        }
-        i += 1;
-    }
+    try runtime.appendTextEscaped(allocator, output, str);
 }
 
-/// Check if string starts with a valid HTML entity
-fn isHtmlEntity(str: []const u8) bool {
-    if (str.len < 3 or str[0] != '&') return false;
-
-    var i: usize = 1;
-
-    // Numeric entity: &#digits; or &#xhex;
-    if (str[i] == '#') {
-        i += 1;
-        if (i >= str.len) return false;
-
-        if (str[i] == 'x' or str[i] == 'X') {
-            i += 1;
-            if (i >= str.len) return false;
-            var has_hex = false;
-            while (i < str.len and i < 10) : (i += 1) {
-                const ch = str[i];
-                if (ch == ';') return has_hex;
-                if ((ch >= '0' and ch <= '9') or
-                    (ch >= 'a' and ch <= 'f') or
-                    (ch >= 'A' and ch <= 'F'))
-                {
-                    has_hex = true;
-                } else {
-                    return false;
-                }
-            }
-            return false;
-        }
-
-        var has_digit = false;
-        while (i < str.len and i < 10) : (i += 1) {
-            const ch = str[i];
-            if (ch == ';') return has_digit;
-            if (ch >= '0' and ch <= '9') {
-                has_digit = true;
-            } else {
-                return false;
-            }
-        }
-        return false;
-    }
-
-    // Named entity: &name;
-    var has_alpha = false;
-    while (i < str.len and i < 32) : (i += 1) {
-        const ch = str[i];
-        if (ch == ';') return has_alpha;
-        if ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9')) {
-            has_alpha = true;
-        } else {
-            return false;
-        }
-    }
-    return false;
-}
-
+/// Check if tag is a void (self-closing) HTML element.
+/// Uses shared void_elements from codegen.zig.
 fn isSelfClosing(name: []const u8) bool {
-    const self_closing_tags = [_][]const u8{
-        "area", "base", "br",    "col",    "embed", "hr",  "img", "input",
-        "link", "meta", "param", "source", "track", "wbr",
-    };
-    for (self_closing_tags) |tag| {
-        if (std.mem.eql(u8, name, tag)) return true;
-    }
-    return false;
+    return codegen.void_elements.has(name);
 }
 
 // ============================================================================

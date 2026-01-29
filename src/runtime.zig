@@ -282,6 +282,107 @@ pub inline fn escapeChar(c: u8) ?[]const u8 {
     return escape_table[c];
 }
 
+// ============================================================================
+// HTML Entity Detection and Text Escaping - shared across codegen modules
+// ============================================================================
+
+/// Check if string starts with a valid HTML entity: &name; or &#digits; or &#xhex;
+/// Used to preserve existing entities during text escaping.
+/// Shared across codegen.zig and template.zig.
+pub fn isHtmlEntity(str: []const u8) bool {
+    if (str.len < 3 or str[0] != '&') return false;
+
+    var i: usize = 1;
+
+    // Numeric entity: &#digits; or &#xhex;
+    if (str[i] == '#') {
+        i += 1;
+        if (i >= str.len) return false;
+
+        // Hex entity: &#x...;
+        if (str[i] == 'x' or str[i] == 'X') {
+            i += 1;
+            if (i >= str.len) return false;
+            var has_hex = false;
+            while (i < str.len and i < 10) : (i += 1) {
+                const ch = str[i];
+                if (ch == ';') return has_hex;
+                if ((ch >= '0' and ch <= '9') or
+                    (ch >= 'a' and ch <= 'f') or
+                    (ch >= 'A' and ch <= 'F'))
+                {
+                    has_hex = true;
+                } else {
+                    return false;
+                }
+            }
+            return false;
+        }
+
+        // Decimal entity: &#digits;
+        var has_digit = false;
+        while (i < str.len and i < 10) : (i += 1) {
+            const ch = str[i];
+            if (ch == ';') return has_digit;
+            if (ch >= '0' and ch <= '9') {
+                has_digit = true;
+            } else {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    // Named entity: &name;
+    var has_alpha = false;
+    while (i < str.len and i < 32) : (i += 1) {
+        const ch = str[i];
+        if (ch == ';') return has_alpha;
+        if ((ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9')) {
+            has_alpha = true;
+        } else {
+            return false;
+        }
+    }
+    return false;
+}
+
+/// Escape for text content - escapes < > & (NOT quotes)
+/// Preserves existing HTML entities like &#8217; or &amp;
+/// Shared across codegen.zig and template.zig.
+pub fn appendTextEscaped(allocator: Allocator, output: *ArrayListUnmanaged(u8), str: []const u8) Allocator.Error!void {
+    var i: usize = 0;
+    while (i < str.len) {
+        const c = str[i];
+        switch (c) {
+            '<' => try output.appendSlice(allocator, "&lt;"),
+            '>' => try output.appendSlice(allocator, "&gt;"),
+            '&' => {
+                if (isHtmlEntity(str[i..])) {
+                    try output.append(allocator, c);
+                } else {
+                    try output.appendSlice(allocator, "&amp;");
+                }
+            },
+            else => try output.append(allocator, c),
+        }
+        i += 1;
+    }
+}
+
+/// Check if a doctype value corresponds to XHTML (non-terse mode).
+/// Returns true for XHTML doctypes, false for HTML5.
+/// Shared across codegen.zig, template.zig, and zig_codegen.zig.
+pub fn isXhtmlDoctype(val: []const u8) bool {
+    return mem.eql(u8, val, "xml") or
+        mem.eql(u8, val, "strict") or
+        mem.eql(u8, val, "transitional") or
+        mem.eql(u8, val, "frameset") or
+        mem.eql(u8, val, "1.1") or
+        mem.eql(u8, val, "basic") or
+        mem.eql(u8, val, "mobile");
+}
+
 /// Attribute entry for attrs function
 pub const AttrEntry = struct {
     key: []const u8,
