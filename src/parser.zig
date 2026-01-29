@@ -1486,6 +1486,12 @@ pub const Parser = struct {
         var attribute_names = std.ArrayListUnmanaged([]const u8){};
         defer attribute_names.deinit(self.allocator);
 
+        // Collect class values to merge into single attribute
+        var class_values = std.ArrayListUnmanaged([]const u8){};
+        defer class_values.deinit(self.allocator);
+        var class_line: usize = 0;
+        var class_column: usize = 0;
+
         // (attrs | class | id)*
         outer: while (true) {
             switch (self.peek().type) {
@@ -1500,21 +1506,30 @@ pub const Parser = struct {
                             }
                         }
                         try attribute_names.append(self.allocator, "id");
+                        // ID: add directly to attrs
+                        const val_str = tok.val.getString() orelse "";
+                        const final_val = try self.allocator.dupe(u8, val_str);
+                        try tag.attrs.append(self.allocator, .{
+                            .name = "id",
+                            .val = final_val,
+                            .line = tok.loc.start.line,
+                            .column = tok.loc.start.column,
+                            .filename = self.filename,
+                            .must_escape = false,
+                            .val_owned = true,
+                            .quoted = true,
+                        });
+                    } else {
+                        // Class: collect for merging later
+                        const val_str = tok.val.getString() orelse "";
+                        if (val_str.len > 0) {
+                            try class_values.append(self.allocator, val_str);
+                            if (class_line == 0) {
+                                class_line = tok.loc.start.line;
+                                class_column = tok.loc.start.column;
+                            }
+                        }
                     }
-                    // Class/id values from shorthand are always static strings
-                    const val_str = tok.val.getString() orelse "";
-                    const final_val = try self.allocator.dupe(u8, val_str);
-
-                    try tag.attrs.append(self.allocator, .{
-                        .name = if (tok.type == .id) "id" else "class",
-                        .val = final_val,
-                        .line = tok.loc.start.line,
-                        .column = tok.loc.start.column,
-                        .filename = self.filename,
-                        .must_escape = false,
-                        .val_owned = true, // We allocated this string
-                        .quoted = true, // Shorthand class/id are always static
-                    });
                 },
                 .start_attributes => {
                     if (seen_attrs) {
@@ -1523,7 +1538,32 @@ pub const Parser = struct {
                     seen_attrs = true;
                     var new_attrs = try self.attrs(&attribute_names);
                     for (new_attrs.items) |attr| {
-                        try tag.attrs.append(self.allocator, attr);
+                        // Collect class attributes for merging
+                        if (mem.eql(u8, attr.name, "class")) {
+                            if (attr.val) |val| {
+                                // Skip empty, null, undefined values
+                                const should_skip = val.len == 0 or
+                                    mem.eql(u8, val, "null") or
+                                    mem.eql(u8, val, "undefined") or
+                                    mem.eql(u8, val, "''") or
+                                    mem.eql(u8, val, "\"\"");
+                                if (!should_skip) {
+                                    try class_values.append(self.allocator, val);
+                                    if (class_line == 0) {
+                                        class_line = attr.line;
+                                        class_column = attr.column;
+                                    }
+                                }
+                            }
+                            // Free owned value since we're collecting it
+                            if (attr.val_owned) {
+                                if (attr.val) |val| {
+                                    self.allocator.free(val);
+                                }
+                            }
+                        } else {
+                            try tag.attrs.append(self.allocator, attr);
+                        }
                     }
                     new_attrs.deinit(self.allocator);
                 },
@@ -1538,6 +1578,39 @@ pub const Parser = struct {
                 },
                 else => break :outer,
             }
+        }
+
+        // Create single merged class attribute if any classes were collected
+        if (class_values.items.len > 0) {
+            // Calculate total length needed
+            var total_len: usize = 0;
+            for (class_values.items, 0..) |val, i| {
+                total_len += val.len;
+                if (i > 0) total_len += 1; // space separator
+            }
+
+            // Build merged class string
+            const merged = try self.allocator.alloc(u8, total_len);
+            var pos: usize = 0;
+            for (class_values.items, 0..) |val, i| {
+                if (i > 0) {
+                    merged[pos] = ' ';
+                    pos += 1;
+                }
+                @memcpy(merged[pos .. pos + val.len], val);
+                pos += val.len;
+            }
+
+            try tag.attrs.append(self.allocator, .{
+                .name = "class",
+                .val = merged,
+                .line = class_line,
+                .column = class_column,
+                .filename = self.filename,
+                .must_escape = false,
+                .val_owned = true,
+                .quoted = true, // Merged classes are static
+            });
         }
 
         // Check for textOnly (.)

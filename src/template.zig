@@ -277,10 +277,6 @@ fn renderTag(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), tag: *No
     try output.appendSlice(allocator, "<");
     try output.appendSlice(allocator, name);
 
-    // Collect class values separately to merge them into one attribute
-    var class_parts = std.ArrayListUnmanaged([]const u8){};
-    defer class_parts.deinit(allocator);
-
     // Render attributes directly to output buffer (avoids intermediate allocations)
     for (tag.attrs.items) |attr| {
         // Substitute mixin arguments in attribute value if we're inside a mixin
@@ -294,25 +290,7 @@ fn renderTag(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), tag: *No
         else
             try evaluateAttrValue(allocator, final_val, data);
 
-        // Collect class attributes for merging
-        if (std.mem.eql(u8, attr.name, "class")) {
-            switch (attr_val) {
-                .string => |s| if (s.len > 0) try class_parts.append(allocator, s),
-                else => {},
-            }
-        } else {
-            try runtime.appendAttr(allocator, output, attr.name, attr_val, true, ctx.terse);
-        }
-    }
-
-    // Output merged class attribute
-    if (class_parts.items.len > 0) {
-        try output.appendSlice(allocator, " class=\"");
-        for (class_parts.items, 0..) |part, i| {
-            if (i > 0) try output.append(allocator, ' ');
-            try output.appendSlice(allocator, part);
-        }
-        try output.append(allocator, '"');
+        try runtime.appendAttr(allocator, output, attr.name, attr_val, true, ctx.terse);
     }
 
     // Self-closing logic differs by mode:
@@ -683,10 +661,6 @@ fn renderTagWithItem(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), 
     try output.appendSlice(allocator, "<");
     try output.appendSlice(allocator, name);
 
-    // Collect class values separately to merge them into one attribute
-    var class_parts = std.ArrayListUnmanaged([]const u8){};
-    defer class_parts.deinit(allocator);
-
     // Render attributes directly to output buffer (avoids intermediate allocations)
     for (tag.attrs.items) |attr| {
         // Static/quoted values (e.g., from .class shorthand) should not be looked up in data
@@ -695,25 +669,7 @@ fn renderTagWithItem(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), 
         else
             try evaluateAttrValue(allocator, attr.val, data);
 
-        // Collect class attributes for merging
-        if (std.mem.eql(u8, attr.name, "class")) {
-            switch (attr_val) {
-                .string => |s| if (s.len > 0) try class_parts.append(allocator, s),
-                else => {},
-            }
-        } else {
-            try runtime.appendAttr(allocator, output, attr.name, attr_val, true, ctx.terse);
-        }
-    }
-
-    // Output merged class attribute
-    if (class_parts.items.len > 0) {
-        try output.appendSlice(allocator, " class=\"");
-        for (class_parts.items, 0..) |part, i| {
-            if (i > 0) try output.append(allocator, ' ');
-            try output.appendSlice(allocator, part);
-        }
-        try output.append(allocator, '"');
+        try runtime.appendAttr(allocator, output, attr.name, attr_val, true, ctx.terse);
     }
 
     const is_void = isSelfClosing(name);

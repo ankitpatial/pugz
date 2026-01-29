@@ -12,10 +12,11 @@ Pugz is a Pug-like HTML template engine written in Zig 0.15.2. It compiles Pug t
 - When the user specifies a new rule, update this CLAUDE.md file to include it.
 - Code comments are required but must be meaningful, not bloated. Focus on explaining "why" not "what". Avoid obvious comments like "// increment counter" - instead explain complex logic, non-obvious decisions, or tricky edge cases.
 - **All documentation files (.md) must be saved to the `docs/` directory.** Do not create .md files in the root directory or examples directories - always place them in `docs/`.
-- **Publish command**: When user says "publish", do the following:
+- **Publish command**: Only when user explicitly says "publish", do the following:
   1. Bump the fix version (patch version in build.zig.zon)
   2. Git commit with appropriate message
   3. Git push to remote `origin` and remote `github`
+  - Do NOT publish automatically or without explicit user request.
 
 ## Build Commands
 
@@ -35,9 +36,13 @@ Source → Lexer → Tokens → StripComments → Parser → AST → Linker → 
 
 ### Three Rendering Modes
 
-1. **Static compilation** (`pug.compile`): Outputs HTML directly
-2. **Data binding** (`template.renderWithData`): Supports `#{field}` interpolation with Zig structs  
-3. **Compiled templates** (`.pug` → `.zig`): Pre-compile templates to Zig functions for maximum performance
+1. **Static compilation** (`pug.compile`): Outputs HTML directly via `codegen.zig`
+2. **Data binding** (`template.renderWithData`): Supports `#{field}` interpolation with Zig structs via `template.zig`
+3. **Compiled templates** (`.pug` → `.zig`): Pre-compile templates to Zig functions via `zig_codegen.zig`
+
+### Important: Shared AST Consumers
+
+**codegen.zig**, **template.zig**, and **zig_codegen.zig** all consume the AST from the parser. When fixing bugs related to AST structure (like attribute handling, class merging, etc.), prefer fixing in **parser.zig** so all three rendering paths benefit from the fix automatically. Only fix in the individual codegen modules if the behavior should differ between rendering modes.
 
 ### Core Modules
 
