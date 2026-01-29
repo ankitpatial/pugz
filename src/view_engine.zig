@@ -69,8 +69,8 @@ pub const ViewEngine = struct {
         var registry = MixinRegistry.init(allocator);
         defer registry.deinit();
 
-        // Parse the main AST and process includes
-        const ast = try self.parseWithIncludes(allocator, template_path, &registry);
+        // Parse the template (handles includes, extends, mixins)
+        const ast = try self.parseTemplate(allocator, template_path, &registry);
         defer {
             ast.deinit(allocator);
             allocator.destroy(ast);
@@ -82,10 +82,21 @@ pub const ViewEngine = struct {
         });
     }
 
-    /// Parse a template and process includes recursively
-    pub fn parseWithIncludes(self: *ViewEngine, allocator: std.mem.Allocator, template_path: []const u8, registry: *MixinRegistry) !*Node {
+    /// Parse a template file and process all Pug features (includes, extends, mixins).
+    /// template_path is relative to views_dir (e.g., "pages/home" for views/pages/home.pug)
+    pub fn parseTemplate(self: *ViewEngine, allocator: std.mem.Allocator, template_path: []const u8, registry: *MixinRegistry) !*Node {
+        return self.parseTemplateInternal(allocator, template_path, null, registry);
+    }
+
+    /// Internal parse function that tracks the current file's directory for resolving relative paths.
+    /// current_dir: directory of the current file (relative to views_dir), or null for top-level
+    fn parseTemplateInternal(self: *ViewEngine, allocator: std.mem.Allocator, template_path: []const u8, current_dir: ?[]const u8, registry: *MixinRegistry) !*Node {
+        // Resolve the template path relative to current file's directory
+        const resolved_template_path = try self.resolveRelativePath(allocator, template_path, current_dir);
+        defer allocator.free(resolved_template_path);
+
         // Build full path (relative to views_dir)
-        const full_path = self.resolvePath(allocator, template_path) catch |err| {
+        const full_path = self.resolvePath(allocator, resolved_template_path) catch |err| {
             log.debug("failed to resolve path '{s}': {}", .{ template_path, err });
             return switch (err) {
                 error.PathEscapesRoot => ViewEngineError.PathEscapesRoot,
@@ -115,11 +126,14 @@ pub const ViewEngine = struct {
         };
         errdefer parse_result.deinit(allocator);
 
+        // Get the directory of the current template (relative to views_dir) for resolving includes
+        const template_dir = std.fs.path.dirname(resolved_template_path);
+
         // Process extends (template inheritance) - must be done before includes
-        const final_ast = try self.processExtends(allocator, parse_result.ast, registry);
+        const final_ast = try self.processExtends(allocator, parse_result.ast, template_dir, registry);
 
         // Process includes in the AST
-        try self.processIncludes(allocator, final_ast, registry);
+        try self.processIncludes(allocator, final_ast, template_dir, registry);
 
         // Collect mixins from this template
         mixin.collectMixins(allocator, final_ast, registry) catch {};
@@ -131,13 +145,23 @@ pub const ViewEngine = struct {
     }
 
     /// Process all include statements in the AST
-    pub fn processIncludes(self: *ViewEngine, allocator: std.mem.Allocator, node: *Node, registry: *MixinRegistry) ViewEngineError!void {
+    /// current_dir: directory of the current template (relative to views_dir) for resolving relative paths
+    pub fn processIncludes(self: *ViewEngine, allocator: std.mem.Allocator, node: *Node, current_dir: ?[]const u8, registry: *MixinRegistry) ViewEngineError!void {
         // Process Include nodes - load the file and inline its content
         if (node.type == .Include or node.type == .RawInclude) {
+            // Skip if already processed (has children inlined)
+            if (node.nodes.items.len > 0) {
+                // Already processed, just recurse into children
+                for (node.nodes.items) |child| {
+                    try self.processIncludes(allocator, child, current_dir, registry);
+                }
+                return;
+            }
+
             if (node.file) |file| {
                 if (file.path) |include_path| {
-                    // Load the included file (path relative to views_dir)
-                    const included_ast = self.parseWithIncludes(allocator, include_path, registry) catch |err| {
+                    // Parse the included file (path is resolved relative to current file's directory)
+                    const included_ast = self.parseTemplateInternal(allocator, include_path, current_dir, registry) catch |err| {
                         // For includes, convert TemplateNotFound to IncludeNotFound
                         if (err == ViewEngineError.TemplateNotFound) {
                             return ViewEngineError.IncludeNotFound;
@@ -166,12 +190,13 @@ pub const ViewEngine = struct {
 
         // Recurse into children
         for (node.nodes.items) |child| {
-            try self.processIncludes(allocator, child, registry);
+            try self.processIncludes(allocator, child, current_dir, registry);
         }
     }
 
     /// Process extends statement - loads parent template and merges blocks
-    pub fn processExtends(self: *ViewEngine, allocator: std.mem.Allocator, ast: *Node, registry: *MixinRegistry) ViewEngineError!*Node {
+    /// current_dir: directory of the current template (relative to views_dir) for resolving relative paths
+    pub fn processExtends(self: *ViewEngine, allocator: std.mem.Allocator, ast: *Node, current_dir: ?[]const u8, registry: *MixinRegistry) ViewEngineError!*Node {
         if (ast.nodes.items.len == 0) return ast;
 
         // Check if first node is Extends
@@ -190,8 +215,8 @@ pub const ViewEngine = struct {
             self.collectNamedBlocks(node, &child_blocks);
         }
 
-        // Load parent template
-        const parent_ast = self.parseWithIncludes(allocator, parent_path.?, registry) catch |err| {
+        // Parse parent template (path is resolved relative to current file's directory)
+        const parent_ast = self.parseTemplateInternal(allocator, parent_path.?, current_dir, registry) catch |err| {
             if (err == ViewEngineError.TemplateNotFound) {
                 return ViewEngineError.IncludeNotFound;
             }
@@ -251,6 +276,66 @@ pub const ViewEngine = struct {
         for (node.nodes.items) |child| {
             self.replaceBlocks(allocator, child, child_blocks);
         }
+    }
+
+    /// Resolves a path relative to the current file's directory.
+    /// - Paths starting with "/" are absolute from views_dir root
+    /// - Paths starting with "./" or "../" are relative to current file's directory
+    /// - Other paths are relative to views_dir root (Pug convention)
+    /// Returns a path relative to views_dir.
+    fn resolveRelativePath(self: *const ViewEngine, allocator: std.mem.Allocator, path: []const u8, current_dir: ?[]const u8) ![]const u8 {
+        _ = self;
+
+        // If path starts with "/", treat as absolute from views_dir root
+        if (path.len > 0 and path[0] == '/') {
+            return allocator.dupe(u8, path[1..]);
+        }
+
+        // Check if path is explicitly relative (starts with "./" or "../")
+        const is_explicit_relative = std.mem.startsWith(u8, path, "./") or std.mem.startsWith(u8, path, "../");
+
+        // If not explicitly relative, treat as relative to views_dir root (Pug convention)
+        if (!is_explicit_relative) {
+            return allocator.dupe(u8, path);
+        }
+
+        // If no current directory (top-level call), path is already relative to views_dir
+        const dir = current_dir orelse {
+            return allocator.dupe(u8, path);
+        };
+
+        // Join current directory with path and normalize
+        // e.g., current_dir="pages", path="../partials/header" -> "partials/header"
+        const joined = try std.fs.path.join(allocator, &.{ dir, path });
+        defer allocator.free(joined);
+
+        // Normalize the path (resolve ".." and ".")
+        // We need to handle this manually since std.fs.path.resolve needs absolute paths
+        var components = std.ArrayListUnmanaged([]const u8){};
+        defer components.deinit(allocator);
+
+        var iter = std.mem.splitScalar(u8, joined, '/');
+        while (iter.next()) |part| {
+            if (std.mem.eql(u8, part, "..")) {
+                // Go up one directory if possible
+                if (components.items.len > 0) {
+                    _ = components.pop();
+                }
+                // If no components left, we're at root - ".." is ignored (handled by security check later)
+            } else if (std.mem.eql(u8, part, ".") or part.len == 0) {
+                // Skip "." and empty parts
+                continue;
+            } else {
+                try components.append(allocator, part);
+            }
+        }
+
+        // Join components back together
+        if (components.items.len == 0) {
+            return allocator.dupe(u8, "");
+        }
+
+        return std.mem.join(allocator, "/", components.items);
     }
 
     /// Resolves a template path relative to views directory.
@@ -349,4 +434,63 @@ test "ViewEngine - path escape protection" {
     // Absolute paths should also be rejected
     const result2 = engine.render(allocator, "/etc/passwd", .{});
     try std.testing.expectError(ViewEngineError.PathEscapesRoot, result2);
+}
+
+test "resolveRelativePath - relative paths from subdirectory" {
+    const allocator = std.testing.allocator;
+    const engine = ViewEngine.init(.{});
+
+    // From pages/, include ../partials/header -> partials/header
+    const result1 = try engine.resolveRelativePath(allocator, "../partials/header", "pages");
+    defer allocator.free(result1);
+    try std.testing.expectEqualStrings("partials/header", result1);
+
+    // From pages/admin/, include ../../partials/header -> partials/header
+    const result2 = try engine.resolveRelativePath(allocator, "../../partials/header", "pages/admin");
+    defer allocator.free(result2);
+    try std.testing.expectEqualStrings("partials/header", result2);
+
+    // From pages/, include ./utils -> pages/utils (explicit relative)
+    const result3 = try engine.resolveRelativePath(allocator, "./utils", "pages");
+    defer allocator.free(result3);
+    try std.testing.expectEqualStrings("pages/utils", result3);
+
+    // From pages/, include header (no ./) -> header (relative to views root, Pug convention)
+    const result4 = try engine.resolveRelativePath(allocator, "header", "pages");
+    defer allocator.free(result4);
+    try std.testing.expectEqualStrings("header", result4);
+
+    // From pages/, include includes/partial -> includes/partial (relative to views root)
+    const result5 = try engine.resolveRelativePath(allocator, "includes/partial", "pages");
+    defer allocator.free(result5);
+    try std.testing.expectEqualStrings("includes/partial", result5);
+}
+
+test "resolveRelativePath - absolute paths from views root" {
+    const allocator = std.testing.allocator;
+    const engine = ViewEngine.init(.{});
+
+    // /partials/header from any directory -> partials/header
+    const result1 = try engine.resolveRelativePath(allocator, "/partials/header", "pages/admin");
+    defer allocator.free(result1);
+    try std.testing.expectEqualStrings("partials/header", result1);
+
+    // /layouts/base from pages/ -> layouts/base
+    const result2 = try engine.resolveRelativePath(allocator, "/layouts/base", "pages");
+    defer allocator.free(result2);
+    try std.testing.expectEqualStrings("layouts/base", result2);
+}
+
+test "resolveRelativePath - no current directory (top-level)" {
+    const allocator = std.testing.allocator;
+    const engine = ViewEngine.init(.{});
+
+    // When current_dir is null, path is returned as-is
+    const result1 = try engine.resolveRelativePath(allocator, "pages/home", null);
+    defer allocator.free(result1);
+    try std.testing.expectEqualStrings("pages/home", result1);
+
+    const result2 = try engine.resolveRelativePath(allocator, "partials/header", null);
+    defer allocator.free(result2);
+    try std.testing.expectEqualStrings("partials/header", result2);
 }

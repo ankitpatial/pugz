@@ -204,8 +204,8 @@ fn compileSingleFile(
     else
         trimmed_views;
 
-    // Parse template with full resolution
-    const final_ast = try engine.parseWithIncludes(arena_allocator, template_name, registry);
+    // Parse template with full resolution (handles includes, extends, mixins)
+    const final_ast = try engine.parseTemplate(arena_allocator, template_name, registry);
 
     // Extract field names
     const fields = try zig_codegen.extractFieldNames(arena_allocator, final_ast);

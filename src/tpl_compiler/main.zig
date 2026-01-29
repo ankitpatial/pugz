@@ -112,9 +112,8 @@ fn compileSingleFile(allocator: mem.Allocator, input_path: []const u8, output_pa
     else
         template_path;
 
-    // Parse template with full includes/extends resolution
-    // This loads all parent templates and includes, processes extends, and collects mixins
-    const final_ast = try engine.parseWithIncludes(allocator, template_name, &registry);
+    // Parse template with full resolution (handles includes, extends, mixins)
+    const final_ast = try engine.parseTemplate(allocator, template_name, &registry);
     // Note: Don't free final_ast as it's managed by the ViewEngine
     // The normalized_source is intentionally leaked as AST strings point into it
     // Both will be cleaned up by the allocator when the CLI exits
