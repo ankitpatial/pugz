@@ -354,19 +354,31 @@ pub const Compiler = struct {
     }
 
     fn visitAttributes(self: *Compiler, tag: *Node) CompilerError!void {
+        // Collect class values to merge them into a single attribute
+        var class_values = std.ArrayListUnmanaged([]const u8){};
+        defer class_values.deinit(self.allocator);
+
+        // First pass: collect class values and output non-class attributes
         for (tag.attrs.items) |attr| {
             if (attr.val) |val| {
-                // Skip empty class/style attributes
-                if (mem.eql(u8, attr.name, "class") or mem.eql(u8, attr.name, "style")) {
-                    // Skip if value is empty, null, or undefined
-                    if (val.len == 0 or
-                        mem.eql(u8, val, "''") or
-                        mem.eql(u8, val, "\"\"") or
-                        mem.eql(u8, val, "null") or
-                        mem.eql(u8, val, "undefined"))
-                    {
-                        continue;
+                // Check if value should be skipped (empty, null, undefined)
+                const should_skip = val.len == 0 or
+                    mem.eql(u8, val, "''") or
+                    mem.eql(u8, val, "\"\"") or
+                    mem.eql(u8, val, "null") or
+                    mem.eql(u8, val, "undefined");
+
+                if (mem.eql(u8, attr.name, "class")) {
+                    // Collect class values to merge later
+                    if (!should_skip) {
+                        try class_values.append(self.allocator, val);
                     }
+                    continue;
+                }
+
+                // Skip empty style attributes
+                if (mem.eql(u8, attr.name, "style") and should_skip) {
+                    continue;
                 }
 
                 // Check for boolean attributes in terse mode
@@ -397,6 +409,19 @@ pub const Compiler = struct {
                 try self.writeChar(' ');
                 try self.write(attr.name);
             }
+        }
+
+        // Output merged class attribute if any classes were collected
+        if (class_values.items.len > 0) {
+            try self.writeChar(' ');
+            try self.write("class=\"");
+            for (class_values.items, 0..) |class_val, i| {
+                if (i > 0) {
+                    try self.writeChar(' ');
+                }
+                try self.write(class_val);
+            }
+            try self.writeChar('"');
         }
     }
 

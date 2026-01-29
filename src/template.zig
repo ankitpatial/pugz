@@ -288,7 +288,11 @@ fn renderTag(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), tag: *No
             substituteArgValue(attr.val, bindings)
         else
             attr.val;
-        const attr_val = try evaluateAttrValue(allocator, final_val, data);
+        // Static/quoted values (e.g., from .class shorthand) should not be looked up in data
+        const attr_val = if (attr.quoted)
+            runtime.AttrValue{ .string = final_val orelse "" }
+        else
+            try evaluateAttrValue(allocator, final_val, data);
 
         // Collect class attributes for merging
         if (std.mem.eql(u8, attr.name, "class")) {
@@ -685,7 +689,11 @@ fn renderTagWithItem(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), 
 
     // Render attributes directly to output buffer (avoids intermediate allocations)
     for (tag.attrs.items) |attr| {
-        const attr_val = try evaluateAttrValue(allocator, attr.val, data);
+        // Static/quoted values (e.g., from .class shorthand) should not be looked up in data
+        const attr_val = if (attr.quoted)
+            runtime.AttrValue{ .string = attr.val orelse "" }
+        else
+            try evaluateAttrValue(allocator, attr.val, data);
 
         // Collect class attributes for merging
         if (std.mem.eql(u8, attr.name, "class")) {

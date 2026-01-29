@@ -202,6 +202,18 @@ test "Implicit div with ID" {
     try expectOutput("#content", .{}, "<div id=\"content\"></div>");
 }
 
+test "Multiple classes merged into single attribute" {
+    try expectOutput("div.foo.bar.baz", .{}, "<div class=\"foo bar baz\"></div>");
+}
+
+test "Multiple classes with text" {
+    try expectOutput(".a.b hello", .{}, "<div class=\"a b\">hello</div>");
+}
+
+test "Class attribute merged with shorthand classes" {
+    try expectOutput("div(class=\"foo\").bar.baz", .{}, "<div class=\"foo bar baz\"></div>");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test Case 10: &attributes spread operator
 // TODO: &attributes spread with JS object literal not yet implemented
