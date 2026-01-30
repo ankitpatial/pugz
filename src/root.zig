@@ -13,6 +13,7 @@ pub const mixin = @import("mixin.zig");
 pub const runtime = @import("runtime.zig");
 pub const codegen = @import("codegen.zig");
 pub const compile_tpls = @import("compile_tpls.zig");
+pub const zig_codegen = @import("tpl_compiler/zig_codegen.zig");
 
 // Re-export main types
 pub const ViewEngine = view_engine.ViewEngine;

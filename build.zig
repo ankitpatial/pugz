@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
     const cli_exe = b.addExecutable(.{
         .name = "pug-compile",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cli/main.zig"),
+            .root_source_file = b.path("src/tpl_compiler/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{

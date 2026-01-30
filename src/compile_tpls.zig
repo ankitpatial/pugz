@@ -217,7 +217,7 @@ fn compileSingleFile(
     var codegen = zig_codegen.Codegen.init(arena_allocator);
     defer codegen.deinit();
 
-    const zig_code = try codegen.generate(expanded_ast, "render", fields);
+    const zig_code = try codegen.generate(expanded_ast, "render", fields, null);
 
     // Create flat filename from views-relative path to avoid collisions
     // e.g., "pages/404.pug" → "pages_404.zig"

@@ -81,7 +81,8 @@ pub const Codegen = struct {
     }
 
     /// Generate Zig code for a template
-    pub fn generate(self: *Codegen, ast: *Node, function_name: []const u8, fields: []const []const u8) ![]const u8 {
+    /// helpers_path: relative path to helpers.zig from the output file (e.g., "../helpers.zig" for nested dirs)
+    pub fn generate(self: *Codegen, ast: *Node, function_name: []const u8, fields: []const []const u8, helpers_path: ?[]const u8) ![]const u8 {
         // Reset state
         self.output.clearRetainingCapacity();
         self.static_buffer.clearRetainingCapacity();
@@ -106,7 +107,9 @@ pub const Codegen = struct {
 
         // Generate imports
         try self.writeLine("const std = @import(\"std\");");
-        try self.writeLine("const helpers = @import(\"helpers.zig\");");
+        try self.write("const helpers = @import(\"");
+        try self.write(helpers_path orelse "helpers.zig");
+        try self.writeLine("\");");
         try self.writeLine("");
 
         // Generate Data struct with typed fields
@@ -528,6 +531,9 @@ pub const Codegen = struct {
             try self.generateNode(cons);
         }
 
+        // Flush static buffer before closing the if block
+        try self.flushStaticBuffer();
+
         self.indent_level -= 1;
 
         // Generate alternate (else/else if)
@@ -546,6 +552,9 @@ pub const Codegen = struct {
                     try self.generateNode(alt_cons);
                 }
 
+                // Flush static buffer before closing the else-if block
+                try self.flushStaticBuffer();
+
                 self.indent_level -= 1;
 
                 // Handle nested alternates
@@ -554,6 +563,8 @@ pub const Codegen = struct {
                     try self.writeLine("} else {");
                     self.indent_level += 1;
                     try self.generateNode(nested_alt);
+                    // Flush static buffer before closing the else block
+                    try self.flushStaticBuffer();
                     self.indent_level -= 1;
                 }
 
@@ -564,6 +575,8 @@ pub const Codegen = struct {
                 try self.writeLine("} else {");
                 self.indent_level += 1;
                 try self.generateNode(alt);
+                // Flush static buffer before closing the else block
+                try self.flushStaticBuffer();
                 self.indent_level -= 1;
                 try self.writeIndent();
                 try self.writeLine("}");
@@ -828,6 +841,12 @@ pub fn extractFieldNames(allocator: Allocator, ast: *Node) ![][]const u8 {
 }
 
 fn extractFieldNamesRecursive(node: *Node, fields: *std.StringHashMap(void), loop_vars: *std.StringHashMap(void)) !void {
+    // Skip mixin DEFINITIONS - they contain parameter references that shouldn't
+    // be extracted as data fields. Only expanded mixin CALLS should be processed.
+    if (node.type == .Mixin and !node.call) {
+        return;
+    }
+
     // Handle TypeHint nodes - just add the field name, type info is handled separately
     if (node.type == .TypeHint) {
         if (node.type_hint_field) |field| {

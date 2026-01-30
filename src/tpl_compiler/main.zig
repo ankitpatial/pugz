@@ -6,13 +6,13 @@
 
 const std = @import("std");
 const pugz = @import("pugz");
-const zig_codegen = @import("zig_codegen.zig");
 const fs = std.fs;
 const mem = std.mem;
 const pug = pugz.pug;
 const template = pugz.template;
 const view_engine = pugz.view_engine;
 const mixin = pugz.mixin;
+const zig_codegen = pugz.zig_codegen;
 const Codegen = zig_codegen.Codegen;
 
 pub fn main() !void {
@@ -60,7 +60,7 @@ pub fn main() !void {
         const input_file = args[1];
         const output_file = args[2];
 
-        try compileSingleFile(allocator, input_file, output_file, null);
+        try compileSingleFile(allocator, input_file, output_file, null, null);
     }
 
     std.debug.print("Compilation complete!\n", .{});
@@ -83,7 +83,7 @@ fn printUsage() !void {
     , .{});
 }
 
-fn compileSingleFile(allocator: mem.Allocator, input_path: []const u8, output_path: []const u8, views_dir: ?[]const u8) !void {
+fn compileSingleFile(allocator: mem.Allocator, input_path: []const u8, output_path: []const u8, views_dir: ?[]const u8, output_base_dir: ?[]const u8) !void {
     std.debug.print("Compiling {s} -> {s}\n", .{ input_path, output_path });
 
     // Use ViewEngine to properly resolve extends, includes, and mixins at build time
@@ -138,11 +138,43 @@ fn compileSingleFile(allocator: mem.Allocator, input_path: []const u8, output_pa
     // Generate function name from file path (always "render")
     const function_name = "render"; // Always use "render", no allocation needed
 
+    // Calculate relative path to helpers.zig from output file
+    var helpers_path: ?[]const u8 = null;
+    defer if (helpers_path) |hp| allocator.free(hp);
+
+    if (output_base_dir) |base_dir| {
+        // Get the relative path from output file to the base output directory
+        const output_dir = fs.path.dirname(output_path) orelse ".";
+
+        // Count directory depth relative to base_dir
+        if (mem.startsWith(u8, output_dir, base_dir)) {
+            const rel_output = output_dir[base_dir.len..];
+            const trimmed = if (rel_output.len > 0 and rel_output[0] == '/') rel_output[1..] else rel_output;
+
+            if (trimmed.len > 0) {
+                // Count the number of directories deep
+                var depth: usize = 1;
+                for (trimmed) |c| {
+                    if (c == '/') depth += 1;
+                }
+
+                // Build "../" prefix for each level
+                var path_buf: std.ArrayList(u8) = .{};
+                defer path_buf.deinit(allocator);
+                for (0..depth) |_| {
+                    try path_buf.appendSlice(allocator, "../");
+                }
+                try path_buf.appendSlice(allocator, "helpers.zig");
+                helpers_path = try path_buf.toOwnedSlice(allocator);
+            }
+        }
+    }
+
     // Generate Zig code from final resolved AST
     var codegen = Codegen.init(allocator);
     defer codegen.deinit();
 
-    const zig_code = try codegen.generate(expanded_ast, function_name, fields);
+    const zig_code = try codegen.generate(expanded_ast, function_name, fields, helpers_path);
     defer allocator.free(zig_code);
 
     // Write output file
@@ -209,7 +241,7 @@ fn compileDirectory(allocator: mem.Allocator, input_dir: []const u8, output_dir:
         }
 
         // Compile the file (pass input_dir as views_dir for includes/extends resolution)
-        compileSingleFile(allocator, pug_file, output_path, input_dir) catch |err| {
+        compileSingleFile(allocator, pug_file, output_path, input_dir, output_dir) catch |err| {
             std.debug.print("  ERROR: Failed to compile {s}: {}\n", .{ pug_file, err });
             continue;
         };

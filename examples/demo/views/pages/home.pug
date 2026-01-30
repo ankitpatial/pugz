@@ -1,5 +1,5 @@
 extends ../layouts/base.pug
-
+include ../mixins/alerts.pug
 block title
   title #{title} | Pugz Store
 
@@ -54,3 +54,6 @@ block content
           .category-icon H
           h3 Home Office
           span 12 products
+
+  if alert_message
+    +alert_error(alert_message)

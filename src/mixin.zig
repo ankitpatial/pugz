@@ -255,6 +255,25 @@ fn expandNodeWithArgs(
     // Substitute argument references in text/val
     if (node.val) |val| {
         new_node.val = try substituteArgs(allocator, val, arg_bindings);
+
+        // If a Code node's val was completely substituted with a literal string,
+        // convert it to a Text node so it's not treated as a data field reference.
+        // This handles cases like `= label` where label is a mixin parameter that
+        // gets substituted with a literal string like "First Name".
+        if (node.type == .Code and node.buffer) {
+            const trimmed_val = mem.trim(u8, val, " \t");
+            // Check if the original val was a simple parameter reference (single identifier)
+            if (isSimpleIdentifier(trimmed_val)) {
+                // And it was substituted (val changed)
+                if (new_node.val) |new_val| {
+                    if (!mem.eql(u8, new_val, val)) {
+                        // Convert to Text node - it's now a literal value
+                        new_node.type = .Text;
+                        new_node.buffer = false;
+                    }
+                }
+            }
+        }
     }
 
     // Clone attributes with argument substitution
@@ -262,6 +281,19 @@ fn expandNodeWithArgs(
         var new_attr = attr;
         if (attr.val) |val| {
             new_attr.val = try substituteArgs(allocator, val, arg_bindings);
+
+            // If attribute value was a simple parameter that got substituted,
+            // mark it as quoted so it's treated as a static string value
+            if (!attr.quoted) {
+                const trimmed_val = mem.trim(u8, val, " \t");
+                if (isSimpleIdentifier(trimmed_val)) {
+                    if (new_attr.val) |new_val| {
+                        if (!mem.eql(u8, new_val, val)) {
+                            new_attr.quoted = true;
+                        }
+                    }
+                }
+            }
         }
         new_node.attrs.append(allocator, new_attr) catch return error.OutOfMemory;
     }
@@ -396,6 +428,23 @@ fn isIdentChar(c: u8) bool {
         (c >= 'A' and c <= 'Z') or
         (c >= '0' and c <= '9') or
         c == '_' or c == '-';
+}
+
+/// Check if a string is a simple identifier (valid mixin parameter name)
+fn isSimpleIdentifier(s: []const u8) bool {
+    if (s.len == 0) return false;
+    // First char must be letter or underscore
+    const first = s[0];
+    if (!((first >= 'a' and first <= 'z') or (first >= 'A' and first <= 'Z') or first == '_')) {
+        return false;
+    }
+    // Rest must be alphanumeric or underscore
+    for (s[1..]) |c| {
+        if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_')) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// Bind call arguments to mixin parameters
