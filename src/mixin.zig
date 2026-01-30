@@ -130,11 +130,21 @@ fn expandNode(
     const new_node = allocator.create(Node) catch return error.OutOfMemory;
     new_node.* = node.*;
     new_node.nodes = .{};
+    new_node.consequent = null;
+    new_node.alternate = null;
 
     // Clone and expand children
     for (node.nodes.items) |child| {
         const expanded_child = try expandNode(allocator, child, registry, caller_block);
         new_node.nodes.append(allocator, expanded_child) catch return error.OutOfMemory;
+    }
+
+    // Handle Conditional nodes which store children in consequent/alternate
+    if (node.consequent) |cons| {
+        new_node.consequent = try expandNode(allocator, cons, registry, caller_block);
+    }
+    if (node.alternate) |alt| {
+        new_node.alternate = try expandNode(allocator, alt, registry, caller_block);
     }
 
     return new_node;
@@ -239,6 +249,8 @@ fn expandNodeWithArgs(
     new_node.* = node.*;
     new_node.nodes = .{};
     new_node.attrs = .{};
+    new_node.consequent = null;
+    new_node.alternate = null;
 
     // Substitute argument references in text/val
     if (node.val) |val| {
@@ -258,6 +270,14 @@ fn expandNodeWithArgs(
     for (node.nodes.items) |child| {
         const expanded = try expandNodeWithArgs(allocator, child, registry, caller_block, arg_bindings);
         new_node.nodes.append(allocator, expanded) catch return error.OutOfMemory;
+    }
+
+    // Handle Conditional nodes which store children in consequent/alternate
+    if (node.consequent) |cons| {
+        new_node.consequent = try expandNodeWithArgs(allocator, cons, registry, caller_block, arg_bindings);
+    }
+    if (node.alternate) |alt| {
+        new_node.alternate = try expandNodeWithArgs(allocator, alt, registry, caller_block, arg_bindings);
     }
 
     return new_node;

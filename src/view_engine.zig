@@ -207,6 +207,13 @@ pub const ViewEngine = struct {
         const parent_path = if (first_node.file) |file| file.path else null;
         if (parent_path == null) return ast;
 
+        // Process includes in child template BEFORE extracting blocks
+        // This ensures mixin definitions from included files are available
+        try self.processIncludes(allocator, ast, current_dir, registry);
+
+        // Collect mixins from child template (including from processed includes)
+        mixin.collectMixins(allocator, ast, registry) catch {};
+
         // Collect named blocks from child template (excluding the extends node)
         var child_blocks = std.StringHashMap(*Node).init(allocator);
         defer child_blocks.deinit();
