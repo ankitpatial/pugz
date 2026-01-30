@@ -190,6 +190,21 @@ pub const Codegen = struct {
             .Conditional => try self.generateConditional(node),
             .Each, .EachOf => try self.generateEach(node),
             .TypeHint => {}, // Skip - processed during field extraction
+            .Mixin => {
+                // Skip mixin definitions (call=false), only process mixin calls (call=true)
+                // Mixin calls should already be expanded by mixin.expandMixins()
+                if (!node.call) return;
+                // If somehow a mixin call wasn't expanded, process its children
+                for (node.nodes.items) |child| {
+                    try self.generateNode(child);
+                }
+            },
+            .Include => {
+                // Process included content (children were inlined by processIncludes)
+                for (node.nodes.items) |child| {
+                    try self.generateNode(child);
+                }
+            },
             else => {
                 // Unsupported nodes: skip or process children
                 for (node.nodes.items) |child| {
