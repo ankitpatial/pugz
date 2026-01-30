@@ -207,14 +207,17 @@ fn compileSingleFile(
     // Parse template with full resolution (handles includes, extends, mixins)
     const final_ast = try engine.parseTemplate(arena_allocator, template_name, registry);
 
+    // Expand mixin calls into concrete AST nodes for codegen
+    const expanded_ast = try mixin.expandMixins(arena_allocator, final_ast, registry);
+
     // Extract field names
-    const fields = try zig_codegen.extractFieldNames(arena_allocator, final_ast);
+    const fields = try zig_codegen.extractFieldNames(arena_allocator, expanded_ast);
 
     // Generate Zig code
     var codegen = zig_codegen.Codegen.init(arena_allocator);
     defer codegen.deinit();
 
-    const zig_code = try codegen.generate(final_ast, "render", fields);
+    const zig_code = try codegen.generate(expanded_ast, "render", fields);
 
     // Create flat filename from views-relative path to avoid collisions
     // e.g., "pages/404.pug" → "pages_404.zig"

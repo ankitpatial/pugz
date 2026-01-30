@@ -114,12 +114,15 @@ fn compileSingleFile(allocator: mem.Allocator, input_path: []const u8, output_pa
 
     // Parse template with full resolution (handles includes, extends, mixins)
     const final_ast = try engine.parseTemplate(allocator, template_name, &registry);
+
+    // Expand mixin calls into concrete AST nodes for codegen
+    const expanded_ast = try mixin.expandMixins(allocator, final_ast, &registry);
     // Note: Don't free final_ast as it's managed by the ViewEngine
     // The normalized_source is intentionally leaked as AST strings point into it
     // Both will be cleaned up by the allocator when the CLI exits
 
     // Extract field names from final resolved AST
-    const fields = try zig_codegen.extractFieldNames(allocator, final_ast);
+    const fields = try zig_codegen.extractFieldNames(allocator, expanded_ast);
     defer {
         for (fields) |field| allocator.free(field);
         allocator.free(fields);
@@ -139,7 +142,7 @@ fn compileSingleFile(allocator: mem.Allocator, input_path: []const u8, output_pa
     var codegen = Codegen.init(allocator);
     defer codegen.deinit();
 
-    const zig_code = try codegen.generate(final_ast, function_name, fields);
+    const zig_code = try codegen.generate(expanded_ast, function_name, fields);
     defer allocator.free(zig_code);
 
     // Write output file

@@ -280,8 +280,7 @@ pub const ViewEngine = struct {
 
     /// Resolves a path relative to the current file's directory.
     /// - Paths starting with "/" are absolute from views_dir root
-    /// - Paths starting with "./" or "../" are relative to current file's directory
-    /// - Other paths are relative to views_dir root (Pug convention)
+    /// - Other paths are relative to current file's directory (if provided)
     /// Returns a path relative to views_dir.
     fn resolveRelativePath(self: *const ViewEngine, allocator: std.mem.Allocator, path: []const u8, current_dir: ?[]const u8) ![]const u8 {
         _ = self;
@@ -289,14 +288,6 @@ pub const ViewEngine = struct {
         // If path starts with "/", treat as absolute from views_dir root
         if (path.len > 0 and path[0] == '/') {
             return allocator.dupe(u8, path[1..]);
-        }
-
-        // Check if path is explicitly relative (starts with "./" or "../")
-        const is_explicit_relative = std.mem.startsWith(u8, path, "./") or std.mem.startsWith(u8, path, "../");
-
-        // If not explicitly relative, treat as relative to views_dir root (Pug convention)
-        if (!is_explicit_relative) {
-            return allocator.dupe(u8, path);
         }
 
         // If no current directory (top-level call), path is already relative to views_dir
@@ -455,15 +446,15 @@ test "resolveRelativePath - relative paths from subdirectory" {
     defer allocator.free(result3);
     try std.testing.expectEqualStrings("pages/utils", result3);
 
-    // From pages/, include header (no ./) -> header (relative to views root, Pug convention)
+    // From pages/, include header (no ./) -> pages/header (relative to current dir)
     const result4 = try engine.resolveRelativePath(allocator, "header", "pages");
     defer allocator.free(result4);
-    try std.testing.expectEqualStrings("header", result4);
+    try std.testing.expectEqualStrings("pages/header", result4);
 
-    // From pages/, include includes/partial -> includes/partial (relative to views root)
+    // From pages/, include includes/partial -> pages/includes/partial (relative to current dir)
     const result5 = try engine.resolveRelativePath(allocator, "includes/partial", "pages");
     defer allocator.free(result5);
-    try std.testing.expectEqualStrings("includes/partial", result5);
+    try std.testing.expectEqualStrings("pages/includes/partial", result5);
 }
 
 test "resolveRelativePath - absolute paths from views root" {
