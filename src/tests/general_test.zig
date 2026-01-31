@@ -354,7 +354,7 @@ test "Class attribute merged with shorthand classes" {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tag Interpolation Tests
-// TODO: Tag interpolation #[tag] requires runtime rendering support
+// NOTE: Tag interpolation is now implemented. Tests moved to tag_interp_test.zig
 // ─────────────────────────────────────────────────────────────────────────────
 
 // test "Simple tag interpolation" {

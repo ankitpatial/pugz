@@ -338,6 +338,8 @@ pub const Lexer = struct {
     tokens: std.ArrayList(Token) = .{},
     ended: bool,
     last_error: ?LexerError = null,
+    /// Buffers from sub-lexers that need to be freed when this lexer is destroyed
+    sub_lexer_buffers: std.ArrayList([]const u8) = .{},
 
     const IndentType = enum { tabs, spaces };
 
@@ -405,6 +407,11 @@ pub const Lexer = struct {
         if (self.input_allocated.len > 0) {
             self.allocator.free(self.input_allocated);
         }
+        // Free buffers from sub-lexers used for tag interpolation
+        for (self.sub_lexer_buffers.items) |buf| {
+            self.allocator.free(buf);
+        }
+        self.sub_lexer_buffers.deinit(self.allocator);
     }
 
     /// Deinit without freeing input_allocated - caller takes ownership of it
@@ -2433,75 +2440,160 @@ pub const Lexer = struct {
     }
 
     fn addText(self: *Lexer, token_type: TokenType, value: []const u8, prefix: []const u8, escaped: usize) void {
-        if (value.len + prefix.len == 0) return;
+        _ = escaped;
+        if (value.len == 0 and prefix.len == 0) return;
 
-        // Check for unclosed or mismatched tag interpolations #[...]
-        // Note: Inside #[...] is full Pug syntax, so we need to track ALL bracket types
-        if (self.interpolation_allowed) {
-            var i: usize = 0;
-            while (i + 1 < value.len) {
-                // Skip escaped \#[
-                if (value[i] == '\\' and i + 2 < value.len and value[i + 1] == '#' and value[i + 2] == '[') {
-                    i += 3;
-                    continue;
+        // Process tag interpolations #[...] by splitting text and emitting tokens
+        if (self.interpolation_allowed and prefix.len == 0) {
+            self.addTextWithTagInterpolation(token_type, value);
+        } else {
+            // No interpolation or has prefix - emit text as-is
+            var token = self.tokWithString(token_type, value);
+            self.incrementColumn(value.len);
+            self.tokens.append(self.allocator, token) catch return;
+            self.tokEnd(&token);
+        }
+    }
+
+    /// Process text with tag interpolations #[...], emitting appropriate tokens
+    fn addTextWithTagInterpolation(self: *Lexer, token_type: TokenType, value: []const u8) void {
+        var i: usize = 0;
+        var text_start: usize = 0;
+
+        while (i < value.len) {
+            // Skip escaped \#[
+            if (value[i] == '\\' and i + 2 < value.len and value[i + 1] == '#' and value[i + 2] == '[') {
+                i += 3;
+                continue;
+            }
+
+            // Check for tag interpolation start #[
+            if (i + 1 < value.len and value[i] == '#' and value[i + 1] == '[') {
+                // Emit text before the interpolation
+                if (i > text_start) {
+                    const text_before = value[text_start..i];
+                    var text_token = self.tokWithString(token_type, text_before);
+                    self.incrementColumn(text_before.len);
+                    self.tokens.append(self.allocator, text_token) catch return;
+                    self.tokEnd(&text_token);
                 }
-                if (value[i] == '#' and value[i + 1] == '[') {
-                    // Found start of tag interpolation, look for matching ]
-                    var j = i + 2;
-                    var in_string: u8 = 0;
 
-                    // Track bracket stack - inside #[...] you can have (...) and {...} for attrs/code
-                    var bracket_stack = std.ArrayList(u8){};
-                    defer bracket_stack.deinit(self.allocator);
-                    bracket_stack.append(self.allocator, '[') catch return;
+                // Find matching closing bracket
+                const interp_end = self.findTagInterpolationEnd(value, i + 2) orelse {
+                    self.setError(.NO_END_BRACKET, "Unclosed tag interpolation - missing ]");
+                    return;
+                };
 
-                    while (j < value.len and bracket_stack.items.len > 0) {
-                        const c = value[j];
-                        if (in_string != 0) {
-                            if (c == in_string and (j == i + 2 or value[j - 1] != '\\')) {
-                                in_string = 0;
-                            }
-                        } else {
-                            if (c == '"' or c == '\'' or c == '`') {
-                                in_string = c;
-                            } else if (c == '[' or c == '(' or c == '{') {
-                                bracket_stack.append(self.allocator, c) catch return;
-                            } else if (c == ']' or c == ')' or c == '}') {
-                                if (bracket_stack.items.len > 0) {
-                                    const last_open = bracket_stack.items[bracket_stack.items.len - 1];
-                                    const expected_close: u8 = switch (last_open) {
-                                        '[' => ']',
-                                        '(' => ')',
-                                        '{' => '}',
-                                        else => 0,
-                                    };
-                                    if (c != expected_close) {
-                                        // Mismatched bracket type
-                                        self.setError(.BRACKET_MISMATCH, "Mismatched bracket in tag interpolation");
-                                        return;
-                                    }
-                                    _ = bracket_stack.pop();
-                                }
-                            }
-                        }
-                        j += 1;
-                    }
-                    if (bracket_stack.items.len > 0) {
-                        // Unclosed interpolation
-                        self.setError(.NO_END_BRACKET, "Unclosed tag interpolation - missing ]");
-                        return;
-                    }
-                    i = j;
-                } else {
-                    i += 1;
-                }
+                // Extract content inside #[...]
+                const interp_content = value[i + 2 .. interp_end];
+
+                // Emit start_pug_interpolation token
+                var start_token = self.tok(.start_pug_interpolation, .none);
+                self.incrementColumn(2); // #[
+                self.tokens.append(self.allocator, start_token) catch return;
+                self.tokEnd(&start_token);
+
+                // Lex the interpolation content as Pug syntax using a sub-lexer
+                self.lexInterpolationContent(interp_content);
+                if (self.last_error != null) return;
+
+                // Emit end_pug_interpolation token
+                var end_token = self.tok(.end_pug_interpolation, .none);
+                self.incrementColumn(1); // ]
+                self.tokens.append(self.allocator, end_token) catch return;
+                self.tokEnd(&end_token);
+
+                // Move past the interpolation
+                i = interp_end + 1;
+                text_start = i;
+            } else {
+                i += 1;
             }
         }
 
-        var token = self.tokWithString(token_type, value);
-        self.incrementColumn(value.len + escaped);
-        self.tokens.append(self.allocator, token) catch return;
-        self.tokEnd(&token);
+        // Emit remaining text after last interpolation
+        if (text_start < value.len) {
+            const remaining = value[text_start..];
+            var text_token = self.tokWithString(token_type, remaining);
+            self.incrementColumn(remaining.len);
+            self.tokens.append(self.allocator, text_token) catch return;
+            self.tokEnd(&text_token);
+        }
+    }
+
+    /// Find the end of a tag interpolation, tracking nested brackets
+    /// Returns index of closing ] or null if not found
+    fn findTagInterpolationEnd(self: *Lexer, value: []const u8, start: usize) ?usize {
+        _ = self;
+        var j = start;
+        var in_string: u8 = 0;
+        var bracket_depth: usize = 1; // Start with 1 for the opening [
+
+        while (j < value.len and bracket_depth > 0) {
+            const c = value[j];
+            if (in_string != 0) {
+                // Inside string - check for end of string (not escaped)
+                if (c == in_string and (j == start or value[j - 1] != '\\')) {
+                    in_string = 0;
+                }
+            } else {
+                if (c == '"' or c == '\'' or c == '`') {
+                    in_string = c;
+                } else if (c == '[' or c == '(' or c == '{') {
+                    bracket_depth += 1;
+                } else if (c == ']' or c == ')' or c == '}') {
+                    bracket_depth -= 1;
+                    if (bracket_depth == 0 and c == ']') {
+                        return j;
+                    }
+                }
+            }
+            j += 1;
+        }
+        return null;
+    }
+
+    /// Lex interpolation content as Pug syntax and add tokens to main lexer
+    fn lexInterpolationContent(self: *Lexer, content: []const u8) void {
+        // Create sub-lexer for the interpolation content
+        // Note: interpolated=false because we've already extracted the content between #[ and ]
+        var sub_lexer = Lexer.init(self.allocator, content, .{
+            .interpolated = false,
+            .starting_line = self.lineno,
+            .starting_column = self.colno,
+        }) catch {
+            self.setError(.SYNTAX_ERROR, "Failed to create sub-lexer for tag interpolation");
+            return;
+        };
+
+        const sub_tokens = sub_lexer.getTokens() catch {
+            // Copy error from sub-lexer
+            if (sub_lexer.last_error) |err| {
+                self.last_error = err;
+            } else {
+                self.setError(.SYNTAX_ERROR, "Failed to lex tag interpolation content");
+            }
+            sub_lexer.deinit();
+            return;
+        };
+
+        // Add sub-lexer tokens to main token list (skip eos token if present)
+        for (sub_tokens) |sub_tok| {
+            if (sub_tok.type == .eos) continue;
+            self.tokens.append(self.allocator, sub_tok) catch {
+                sub_lexer.deinit();
+                return;
+            };
+        }
+
+        // Deinit sub-lexer but keep its input buffer alive since tokens reference it
+        // The sub-lexer normalized the content, and token string values point to that buffer
+        // Track this buffer so the main lexer can free it on deinit
+        const kept_input = sub_lexer.deinitKeepInput();
+        self.sub_lexer_buffers.append(self.allocator, kept_input) catch return;
+
+        // Update column position based on content length
+        self.incrementColumn(content.len);
     }
 
     // ========================================================================
@@ -2746,4 +2838,50 @@ test "boolean attribute" {
         }
     }
     try std.testing.expect(attr_found);
+}
+
+test "tag interpolation lexing - sub-lexer directly" {
+    // Test: can we lex "strong important" as standalone input?
+    const allocator = std.testing.allocator;
+    var sub_lex = try Lexer.init(allocator, "strong important", .{ .interpolated = false });
+    defer sub_lex.deinit();
+
+    const sub_tokens = sub_lex.getTokens() catch |err| {
+        std.debug.print("Sub-lexer error: {any}\n", .{err});
+        if (sub_lex.last_error) |e| {
+            std.debug.print("Error: {s} at line {} col {}\n", .{ e.message, e.line, e.column });
+        }
+        return err;
+    };
+
+    // Should have: tag("strong") + text("important") + eos
+    try std.testing.expect(sub_tokens.len >= 2);
+    try std.testing.expectEqual(TokenType.tag, sub_tokens[0].type);
+    try std.testing.expectEqualStrings("strong", sub_tokens[0].val.getString().?);
+    try std.testing.expectEqual(TokenType.text, sub_tokens[1].type);
+    try std.testing.expectEqualStrings("important", sub_tokens[1].val.getString().?);
+}
+
+test "tag interpolation in text" {
+    const allocator = std.testing.allocator;
+    var lexer2 = try Lexer.init(allocator, "p This is #[strong important] text.", .{});
+    defer lexer2.deinit();
+
+    const tokens = lexer2.getTokens() catch |err| {
+        std.debug.print("Lexer error: {any}\n", .{err});
+        if (lexer2.last_error) |e| {
+            std.debug.print("Error: {s} at line {} col {}\n", .{ e.message, e.line, e.column });
+        }
+        return err;
+    };
+
+    // Verify token sequence
+    var found_start_interp = false;
+    var found_end_interp = false;
+    for (tokens) |tok| {
+        if (tok.type == .start_pug_interpolation) found_start_interp = true;
+        if (tok.type == .end_pug_interpolation) found_end_interp = true;
+    }
+    try std.testing.expect(found_start_interp);
+    try std.testing.expect(found_end_interp);
 }
