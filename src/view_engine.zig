@@ -50,6 +50,7 @@ pub const Options = struct {
 
 pub const ViewEngine = struct {
     options: Options,
+    views_dir_logged: bool = false,
 
     pub fn init(options: Options) ViewEngine {
         return .{
@@ -97,7 +98,10 @@ pub const ViewEngine = struct {
 
         // Build full path (relative to views_dir)
         const full_path = self.resolvePath(allocator, resolved_template_path) catch |err| {
-            log.debug("failed to resolve path '{s}': {}", .{ template_path, err });
+            log.err("❌ resolvePath: '{s}' — {}", .{ template_path, err });
+            if (@errorReturnTrace()) |trace| {
+                std.debug.dumpStackTrace(trace.*);
+            }
             return switch (err) {
                 error.PathEscapesRoot => ViewEngineError.PathEscapesRoot,
                 else => ViewEngineError.ReadError,
@@ -107,6 +111,10 @@ pub const ViewEngine = struct {
 
         // Read template file
         const source = std.fs.cwd().readFileAlloc(allocator, full_path, 10 * 1024 * 1024) catch |err| {
+            log.err("❌ readFile: '{s}' — {}", .{ full_path, err });
+            if (@errorReturnTrace()) |trace| {
+                std.debug.dumpStackTrace(trace.*);
+            }
             return switch (err) {
                 error.FileNotFound => ViewEngineError.TemplateNotFound,
                 else => ViewEngineError.ReadError,
@@ -121,7 +129,10 @@ pub const ViewEngine = struct {
         // 3. Both will be freed together when render() completes
         // This is acceptable since ViewEngine.render() is short-lived (single request)
         var parse_result = template.parseWithSource(allocator, source) catch |err| {
-            log.err("failed to parse template '{s}': {}", .{ full_path, err });
+            log.err("❌ parse: '{s}' — {}", .{ full_path, err });
+            if (@errorReturnTrace()) |trace| {
+                std.debug.dumpStackTrace(trace.*);
+            }
             return ViewEngineError.ParseError;
         };
         errdefer parse_result.deinit(allocator);
@@ -141,6 +152,7 @@ pub const ViewEngine = struct {
         // Don't free parse_result.normalized_source - it's needed while AST is alive
         // It will be freed when the caller uses ArenaAllocator (typical usage pattern)
 
+        log.debug("✅ '{s}'", .{resolved_template_path});
         return final_ast;
     }
 
@@ -338,8 +350,11 @@ pub const ViewEngine = struct {
 
     /// Resolves a template path relative to views directory.
     /// Rejects paths that escape the views root (e.g., "../etc/passwd").
-    fn resolvePath(self: *const ViewEngine, allocator: std.mem.Allocator, template_path: []const u8) ![]const u8 {
-        log.debug("resolvePath: template_path='{s}', views_dir='{s}'", .{ template_path, self.options.views_dir });
+    fn resolvePath(self: *ViewEngine, allocator: std.mem.Allocator, template_path: []const u8) ![]const u8 {
+        if (!self.views_dir_logged) {
+            log.debug("views_dir='{s}'", .{self.options.views_dir});
+            self.views_dir_logged = true;
+        }
 
         // Add extension if not present
         const with_ext = if (std.mem.endsWith(u8, template_path, self.options.extension))

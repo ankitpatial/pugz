@@ -32,8 +32,10 @@ pub const ZigCodegenError = error{
 /// Type information parsed from @TypeOf annotations
 pub const TypeInfo = struct {
     is_array: bool = false,
+    is_optional: bool = false,
     struct_fields: ?std.StringHashMap([]const u8) = null,
     primitive_type: ?[]const u8 = null,
+    import_type: ?[]const u8 = null,
 
     pub fn deinit(self: *TypeInfo, allocator: Allocator) void {
         if (self.struct_fields) |*fields| {
@@ -674,8 +676,25 @@ pub const Codegen = struct {
         }
     }
 
-    /// Write a field name with sanitization (replace dots with underscores)
+    /// Write a field name with sanitization (replace dots with underscores).
+    /// For @import-typed fields, preserves dots as real Zig field access and
+    /// inserts `.?` after the base if the type is optional (e.g., user.name -> user.?.name).
     fn writeSanitizedFieldName(self: *Codegen, field_name: []const u8) !void {
+        if (std.mem.indexOf(u8, field_name, ".")) |dot_idx| {
+            const base = field_name[0..dot_idx];
+            if (self.type_hints.get(base)) |info| {
+                if (info.import_type != null) {
+                    // Preserve dots as real Zig field access
+                    try self.write(base);
+                    if (info.is_optional) {
+                        try self.write(".?");
+                    }
+                    try self.write(field_name[dot_idx..]);
+                    return;
+                }
+            }
+        }
+        // Default: replace dots with underscores
         for (field_name) |c| {
             try self.output.append(self.allocator, if (c == '.') '_' else c);
         }
@@ -698,7 +717,16 @@ pub const Codegen = struct {
 
     /// Check if a field has a non-string type hint (requires helpers.appendValue)
     fn hasNonStringTypeHint(self: *Codegen, field_name: []const u8) bool {
-        const type_info = self.type_hints.get(field_name) orelse return false;
+        // Direct lookup first, then try base name for dotted fields (e.g., "user.name" -> "user")
+        const type_info = self.type_hints.get(field_name) orelse blk: {
+            if (std.mem.indexOf(u8, field_name, ".")) |dot_idx| {
+                break :blk self.type_hints.get(field_name[0..dot_idx]);
+            }
+            break :blk null;
+        } orelse return false;
+
+        // Import types always need appendValue (field access returns non-string types)
+        if (type_info.import_type != null) return true;
 
         // Arrays always need appendValue
         if (type_info.is_array) return true;
@@ -725,6 +753,23 @@ pub const Codegen = struct {
 
     /// Write type information to output (generates Zig type syntax with default value)
     fn writeTypeInfo(self: *Codegen, type_info: TypeInfo) !void {
+        // Handle @import(...) type expressions (verbatim Zig types)
+        if (type_info.import_type) |import_expr| {
+            if (type_info.is_array) {
+                try self.write("[]const ");
+            }
+            if (type_info.is_optional) {
+                try self.write("?");
+            }
+            try self.write(import_expr);
+            if (type_info.is_optional) {
+                try self.write(" = null");
+            } else if (type_info.is_array) {
+                try self.write(" = &.{}");
+            }
+            return;
+        }
+
         if (type_info.is_array) {
             // Array type: []const struct { ... } = &.{}
             if (type_info.struct_fields) |struct_fields| {
@@ -814,7 +859,8 @@ pub const Codegen = struct {
 // ============================================================================
 
 /// Extract all data field names referenced in an AST
-/// Sanitizes field names to be valid Zig identifiers (replaces '.' with '_')
+/// Sanitizes field names to be valid Zig identifiers (replaces '.' with '_'),
+/// except for fields whose base has an @import type hint (those collapse to the base name).
 pub fn extractFieldNames(allocator: Allocator, ast: *Node) ![][]const u8 {
     var fields = std.StringHashMap(void).init(allocator);
     defer fields.deinit();
@@ -824,16 +870,40 @@ pub fn extractFieldNames(allocator: Allocator, ast: *Node) ![][]const u8 {
 
     try extractFieldNamesRecursive(ast, &fields, &loop_vars);
 
-    // Convert to sorted slice and sanitize field names
+    // Collect type hints to identify @import-typed fields
+    var type_hints = std.StringHashMap(TypeInfo).init(allocator);
+    defer type_hints.deinit();
+    try collectTypeHints(allocator, ast, &type_hints);
+
+    // Convert to sorted slice, collapsing dotted fields whose base has an @import type
     var result: std.ArrayList([]const u8) = .{};
     errdefer {
         for (result.items) |item| allocator.free(item);
         result.deinit(allocator);
     }
 
+    // Track which base names we've already added (to avoid duplicates after collapsing)
+    var seen = std.StringHashMap(void).init(allocator);
+    defer seen.deinit();
+
     var iter = fields.keyIterator();
     while (iter.next()) |key| {
-        // Sanitize: replace dots with underscores for valid Zig identifiers
+        // For dotted fields (e.g., "user.name"), check if base has an @import type
+        if (std.mem.indexOf(u8, key.*, ".")) |dot_idx| {
+            const base = key.*[0..dot_idx];
+            if (type_hints.get(base)) |info| {
+                if (info.import_type != null) {
+                    // Collapse to base name — skip if already added
+                    if (seen.contains(base)) continue;
+                    try seen.put(base, {});
+                    const duped = try allocator.dupe(u8, base);
+                    try result.append(allocator, duped);
+                    continue;
+                }
+            }
+        }
+
+        // Default: sanitize dots to underscores for valid Zig identifiers
         const sanitized = try allocator.alloc(u8, key.*.len);
         errdefer allocator.free(sanitized);
 
@@ -841,6 +911,12 @@ pub fn extractFieldNames(allocator: Allocator, ast: *Node) ![][]const u8 {
             sanitized[i] = if (c == '.') '_' else c;
         }
 
+        // Deduplicate (base name from TypeHint node may already exist)
+        if (seen.contains(sanitized)) {
+            allocator.free(sanitized);
+            continue;
+        }
+        try seen.put(sanitized, {});
         try result.append(allocator, sanitized);
     }
 
@@ -1021,10 +1097,22 @@ pub fn parseTypeHintSpec(allocator: Allocator, spec: []const u8) !TypeInfo {
     var info = TypeInfo{};
     var remaining = std.mem.trim(u8, spec, " \t");
 
+    // Check for optional prefix ?
+    if (remaining.len > 0 and remaining[0] == '?') {
+        info.is_optional = true;
+        remaining = remaining[1..];
+    }
+
     // Check for array prefix []
     if (std.mem.startsWith(u8, remaining, "[]")) {
         info.is_array = true;
         remaining = remaining[2..];
+    }
+
+    // Check for @import(...) type expression (verbatim Zig type)
+    if (std.mem.startsWith(u8, remaining, "@import(")) {
+        info.import_type = remaining;
+        return info;
     }
 
     // Check for struct definition {...}
@@ -1135,10 +1223,10 @@ test "zig_codegen - static attributes" {
         allocator.free(fields);
     }
 
-    var cg = Codegen.init(allocator, .{});
+    var cg = Codegen.init(allocator);
     defer cg.deinit();
 
-    const zig_code = try cg.generate(parse_result.ast, "render", fields);
+    const zig_code = try cg.generate(parse_result.ast, "render", fields, null);
     defer allocator.free(zig_code);
 
     // Static attributes should be in the string literal
@@ -1165,14 +1253,86 @@ test "zig_codegen - dynamic attributes" {
     try std.testing.expectEqual(@as(usize, 1), fields.len);
     try std.testing.expectEqualStrings("url", fields[0]);
 
-    var cg = Codegen.init(allocator, .{});
+    var cg = Codegen.init(allocator);
     defer cg.deinit();
 
-    const zig_code = try cg.generate(parse_result.ast, "render", fields);
+    const zig_code = try cg.generate(parse_result.ast, "render", fields, null);
     defer allocator.free(zig_code);
 
     // Dynamic href should use data.url
     try std.testing.expect(std.mem.indexOf(u8, zig_code, "data.url") != null);
     // Static class should still be in string
     try std.testing.expect(std.mem.indexOf(u8, zig_code, "class=\\\"btn\\\"") != null);
+}
+
+test "zig_codegen - @TypeOf with optional @import type" {
+    const allocator = std.testing.allocator;
+
+    const source =
+        \\//- @TypeOf(user): ?@import("api").account.AuthUser
+        \\if user
+        \\  span= user.name
+        \\else
+        \\  a(href="/login") Login
+    ;
+
+    var parse_result = try template.parseWithSource(allocator, source);
+    defer parse_result.deinit(allocator);
+
+    // Field extraction should collapse user.name to just user
+    const fields = try extractFieldNames(allocator, parse_result.ast);
+    defer {
+        for (fields) |field| allocator.free(field);
+        allocator.free(fields);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), fields.len);
+    try std.testing.expectEqualStrings("user", fields[0]);
+
+    // Generated code should have correct type and field access
+    var cg = Codegen.init(allocator);
+    defer cg.deinit();
+
+    const zig_code = try cg.generate(parse_result.ast, "render", fields, null);
+    defer allocator.free(zig_code);
+
+    // Data struct should have optional import type with null default
+    try std.testing.expect(std.mem.indexOf(u8, zig_code, "?@import(\"api\").account.AuthUser = null") != null);
+    // Should NOT contain user_name as a separate field
+    try std.testing.expect(std.mem.indexOf(u8, zig_code, "user_name") == null);
+    // Should use .? for optional unwrap in field access
+    try std.testing.expect(std.mem.indexOf(u8, zig_code, "data.user.?.name") != null);
+}
+
+test "zig_codegen - @TypeOf with non-optional @import type" {
+    const allocator = std.testing.allocator;
+
+    const source =
+        \\//- @TypeOf(config) = @import("conf").Config
+        \\p= config.title
+    ;
+
+    var parse_result = try template.parseWithSource(allocator, source);
+    defer parse_result.deinit(allocator);
+
+    const fields = try extractFieldNames(allocator, parse_result.ast);
+    defer {
+        for (fields) |field| allocator.free(field);
+        allocator.free(fields);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), fields.len);
+    try std.testing.expectEqualStrings("config", fields[0]);
+
+    var cg = Codegen.init(allocator);
+    defer cg.deinit();
+
+    const zig_code = try cg.generate(parse_result.ast, "render", fields, null);
+    defer allocator.free(zig_code);
+
+    // Non-optional import type: no ? prefix, no = null default
+    try std.testing.expect(std.mem.indexOf(u8, zig_code, "@import(\"conf\").Config,") != null);
+    // Field access without .? (not optional)
+    try std.testing.expect(std.mem.indexOf(u8, zig_code, "data.config.title") != null);
+    try std.testing.expect(std.mem.indexOf(u8, zig_code, "config_title") == null);
 }
