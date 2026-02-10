@@ -814,17 +814,23 @@ pub const Codegen = struct {
                 try self.write(" } = .{}");
             } else if (type_info.primitive_type) |prim| {
                 // Primitive type with appropriate default
-                try self.write(prim);
-                if (std.mem.eql(u8, prim, "[]const u8")) {
-                    try self.write(" = \"\"");
-                } else if (std.mem.eql(u8, prim, "bool")) {
-                    try self.write(" = false");
-                } else if (std.mem.startsWith(u8, prim, "i") or std.mem.startsWith(u8, prim, "u")) {
-                    try self.write(" = 0");
-                } else if (std.mem.startsWith(u8, prim, "f")) {
-                    try self.write(" = 0.0");
+                if (type_info.is_optional) {
+                    try self.write("?");
+                    try self.write(prim);
+                    try self.write(" = null");
                 } else {
-                    // Unknown type, no default
+                    try self.write(prim);
+                    if (std.mem.eql(u8, prim, "[]const u8")) {
+                        try self.write(" = \"\"");
+                    } else if (std.mem.eql(u8, prim, "bool")) {
+                        try self.write(" = false");
+                    } else if (std.mem.startsWith(u8, prim, "i") or std.mem.startsWith(u8, prim, "u")) {
+                        try self.write(" = 0");
+                    } else if (std.mem.startsWith(u8, prim, "f")) {
+                        try self.write(" = 0.0");
+                    } else {
+                        // Unknown type, no default
+                    }
                 }
             } else {
                 // Fallback: string
@@ -1103,6 +1109,12 @@ pub fn parseTypeHintSpec(allocator: Allocator, spec: []const u8) !TypeInfo {
         remaining = remaining[1..];
     }
 
+    // Treat []const u8 as a string primitive, not an array
+    if (std.mem.eql(u8, remaining, "[]const u8")) {
+        info.primitive_type = remaining;
+        return info;
+    }
+
     // Check for array prefix []
     if (std.mem.startsWith(u8, remaining, "[]")) {
         info.is_array = true;
@@ -1335,4 +1347,36 @@ test "zig_codegen - @TypeOf with non-optional @import type" {
     // Field access without .? (not optional)
     try std.testing.expect(std.mem.indexOf(u8, zig_code, "data.config.title") != null);
     try std.testing.expect(std.mem.indexOf(u8, zig_code, "config_title") == null);
+}
+
+test "zig_codegen - @TypeOf with optional string type" {
+    const allocator = std.testing.allocator;
+
+    const source =
+        \\//- @TypeOf(_logo_url): ?[]const u8
+        \\if _logo_url
+        \\  img(src=_logo_url)
+    ;
+
+    var parse_result = try template.parseWithSource(allocator, source);
+    defer parse_result.deinit(allocator);
+
+    const fields = try extractFieldNames(allocator, parse_result.ast);
+    defer {
+        for (fields) |field| allocator.free(field);
+        allocator.free(fields);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), fields.len);
+    try std.testing.expectEqualStrings("_logo_url", fields[0]);
+
+    var cg = Codegen.init(allocator);
+    defer cg.deinit();
+
+    const zig_code = try cg.generate(parse_result.ast, "render", fields, null);
+    defer allocator.free(zig_code);
+
+    // Should be ?[]const u8 = null, not []const const u8 = &.{}
+    try std.testing.expect(std.mem.indexOf(u8, zig_code, "?[]const u8 = null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, zig_code, "[]const const") == null);
 }
