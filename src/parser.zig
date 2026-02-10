@@ -1039,12 +1039,12 @@ pub const Parser = struct {
 
         const field_name = text[paren_start..paren_end];
 
-        // Find colon separator
-        var colon_pos = paren_end + 1;
-        while (colon_pos < text.len and (text[colon_pos] == ' ' or text[colon_pos] == '\t')) : (colon_pos += 1) {}
+        // Find separator: either ':' or '='
+        var sep_pos = paren_end + 1;
+        while (sep_pos < text.len and (text[sep_pos] == ' ' or text[sep_pos] == '\t')) : (sep_pos += 1) {}
 
-        if (colon_pos >= text.len or text[colon_pos] != ':') {
-            // No colon found - treat as regular comment
+        if (sep_pos >= text.len or (text[sep_pos] != ':' and text[sep_pos] != '=')) {
+            // No separator found - treat as regular comment
             const node = try self.allocator.create(Node);
             node.* = .{
                 .type = .Comment,
@@ -1057,8 +1057,8 @@ pub const Parser = struct {
             return node;
         }
 
-        // Get type spec after colon
-        const type_spec = mem.trim(u8, text[colon_pos + 1 ..], " \t");
+        // Get type spec after separator
+        const type_spec = mem.trim(u8, text[sep_pos + 1 ..], " \t");
 
         const node = try self.allocator.create(Node);
         node.* = .{
